@@ -419,6 +419,8 @@ class WAN22Inference:
     
     def _print_report(self, output_path, num_frames, seed):
         """Print generation report"""
+        from wan22_utils import PerformanceMonitor
+        
         print("\n" + "="*60)
         print("Generation Report")
         print("="*60)
