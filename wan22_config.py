@@ -484,7 +484,7 @@ Examples:
     # Generation parameters
     gen_group = parser.add_argument_group('Generation Parameters')
     gen_group.add_argument('-w', '--width', type=int, help='Video width')
-    gen_group.add_argument('-h', '--height', type=int, help='Video height')
+    gen_group.add_argument('-H', '--height', type=int, help='Video height')
     gen_group.add_argument('-f', '--frames', type=int, help='Number of frames')
     gen_group.add_argument('-s', '--steps', type=int, help='Sampling steps')
     gen_group.add_argument('--cfg', type=float, help='CFG scale')

@@ -327,18 +327,10 @@ class CLIPLoader:
     @staticmethod
     def load(clip_path: str, clip_type: str = "wan", device: str = "default"):
         print(f"Loading text encoder from: {clip_path}")
-        
-        # Load tokenizer
-        tokenizer = T5Tokenizer.from_pretrained("google/umt5-xxl", legacy=False)
-        
-        # Load T5 model
-        text_encoder = T5EncoderModel.from_pretrained("google/umt5-xxl", torch_dtype=torch.float16)
-        
-        # Load custom weights if available
-        if clip_path and clip_path.endswith('.safetensors'):
-            state_dict = load_file(clip_path)
-            text_encoder.load_state_dict(state_dict, strict=False)
-        
+        # Load tokenizer and model from full local repo directory (umt5_xxl_fp16)
+        local_dir = "models/text_encoders/umt5_xxl_fp16"
+        tokenizer = T5Tokenizer.from_pretrained(local_dir, legacy=False)
+        text_encoder = T5EncoderModel.from_pretrained(local_dir, torch_dtype=torch.float16)
         return tokenizer, text_encoder
 
 
@@ -609,16 +601,15 @@ class WAN22Pipeline:
         self.clip_encode = CLIPTextEncode(tokenizer, text_encoder, self.device)
         
         # Node 39: VAELoader
-        self.vae = VAELoader.load(f"{self.model_dir}/vae/wan_2.1_vae.safetensors")
+        self.vae = VAELoader.load("models/vae/wan_2.1_vae.safetensors")
         
         # Node 37: UNETLoader (high noise)
         transformer_high = UNETLoader.load(
-            f"{self.model_dir}/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
+            "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
         )
-        
         # Node 56: UNETLoader (low noise)
         transformer_low = UNETLoader.load(
-            f"{self.model_dir}/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
+            "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
         )
         
         # Nodes 54, 55: ModelSamplingSD3
