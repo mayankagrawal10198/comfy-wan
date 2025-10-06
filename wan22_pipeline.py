@@ -236,11 +236,10 @@ class WanDiT(nn.Module):
         
         # Time conditioning
         t_emb = self.time_embed(timesteps)
-        t_emb = self.time_mlp(t_emb)
-        
-        # Ensure time embedding has same dtype as model
+        # Convert to model dtype before passing through MLP
         model_dtype = next(self.parameters()).dtype
         t_emb = t_emb.to(dtype=model_dtype)
+        t_emb = self.time_mlp(t_emb)
         
         # Project context - create embedder if needed
         if self.context_embedder is None:
