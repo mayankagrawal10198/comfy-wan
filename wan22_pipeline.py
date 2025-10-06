@@ -233,17 +233,22 @@ class WanDiT(nn.Module):
         t_emb = self.time_embed(timesteps)
         t_emb = self.time_mlp(t_emb)
         
-        # Ensure time embedding has same dtype as context
-        t_emb = t_emb.to(dtype=context.dtype)
+        # Ensure time embedding has same dtype as model
+        model_dtype = next(self.parameters()).dtype
+        t_emb = t_emb.to(dtype=model_dtype)
         
         # Project context - create embedder if needed
         if self.context_embedder is None:
             context_dim = context.shape[-1]
+            # Get model dtype from existing parameters
+            model_dtype = next(self.parameters()).dtype
             self.context_embedder = nn.Linear(context_dim, self.hidden_size).to(
                 device=context.device, 
-                dtype=context.dtype
+                dtype=model_dtype
             )
         
+        # Ensure context is in correct dtype
+        context = context.to(dtype=next(self.parameters()).dtype)
         c = self.context_embedder(context.mean(dim=1))  # Pool sequence
         c = c + t_emb
         
@@ -325,6 +330,10 @@ class UNETLoader:
         # Load state dict
         state_dict = load_file(unet_path)
         
+        # Determine dtype from state dict
+        sample_tensor = next(iter(state_dict.values()))
+        model_dtype = sample_tensor.dtype
+        
         # Create model
         model = WanDiT(
             in_channels=16,
@@ -332,6 +341,9 @@ class UNETLoader:
             depth=28,
             num_heads=24
         )
+        
+        # Convert model to same dtype as weights before loading
+        model = model.to(dtype=model_dtype)
         
         # Load weights
         model.load_state_dict(state_dict, strict=False)
