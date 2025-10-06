@@ -889,20 +889,61 @@ class LoraLoaderModelOnly:
         
     def _apply_lora(self):
         """Apply LoRA weights to model"""
-        for name, param in self.model.named_parameters():
-            # Check for LoRA layers
-            lora_up_key = f"{name}.lora_up.weight"
-            lora_down_key = f"{name}.lora_down.weight"
+        print(f"   Checking {len(self.lora_state_dict)} LoRA keys...")
+        
+        # Debug: print some LoRA keys to understand the structure
+        lora_keys = list(self.lora_state_dict.keys())[:5]
+        print(f"   Sample LoRA keys: {lora_keys}")
+        
+        applied_count = 0
+        
+        # Try to match LoRA keys with model parameters
+        for lora_key in self.lora_state_dict.keys():
+            # LoRA keys might have different formats:
+            # 1. "layer.lora_up.weight" and "layer.lora_down.weight"
+            # 2. "lora.layer.up" and "lora.layer.down"
+            # 3. Direct weight keys that should be added to base model
             
-            if lora_up_key in self.lora_state_dict and lora_down_key in self.lora_state_dict:
-                lora_up = self.lora_state_dict[lora_up_key]
-                lora_down = self.lora_state_dict[lora_down_key]
+            if 'lora' in lora_key.lower():
+                # This is a LoRA-specific key
+                # Try to find the corresponding base weight and apply LoRA
+                base_key = lora_key.replace('.lora_up.weight', '').replace('.lora_down.weight', '')
+                base_key = base_key.replace('.lora_A.weight', '').replace('.lora_B.weight', '')
                 
-                # Compute LoRA update: W' = W + alpha * (up @ down)
-                lora_weight = torch.mm(lora_up, lora_down) * self.strength
-                param.data += lora_weight
-                
-        print(f"LoRA applied with strength {self.strength}")
+                # Look for pairs
+                if 'lora_up' in lora_key or 'lora_B' in lora_key:
+                    down_key = lora_key.replace('lora_up', 'lora_down').replace('lora_B', 'lora_A')
+                    if down_key in self.lora_state_dict:
+                        lora_up = self.lora_state_dict[lora_key]
+                        lora_down = self.lora_state_dict[down_key]
+                        
+                        # Find corresponding model parameter
+                        for name, param in self.model.named_parameters():
+                            if base_key in name or name in base_key:
+                                try:
+                                    # Compute LoRA update: W' = W + alpha * (B @ A)
+                                    if len(lora_up.shape) == 2 and len(lora_down.shape) == 2:
+                                        lora_weight = (lora_up @ lora_down) * self.strength
+                                        if lora_weight.shape == param.shape:
+                                            param.data += lora_weight.to(param.dtype)
+                                            applied_count += 1
+                                            break
+                                except Exception as e:
+                                    continue
+            else:
+                # Direct weight - try to add to base model
+                for name, param in self.model.named_parameters():
+                    if name == lora_key:
+                        try:
+                            weight_diff = self.lora_state_dict[lora_key]
+                            if weight_diff.shape == param.shape:
+                                param.data += (weight_diff * self.strength).to(param.dtype)
+                                applied_count += 1
+                                break
+                        except Exception as e:
+                            continue
+        
+        print(f"   LoRA applied to {applied_count} layers (strength: {self.strength})")
 
 
 # ==================== MAIN PIPELINE ====================
