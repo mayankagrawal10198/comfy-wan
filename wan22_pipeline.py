@@ -176,18 +176,21 @@ class WanDiT(nn.Module):
         
         self.initialize_weights()
         
-    def _get_pos_embed(self, seq_len, device):
+    def _get_pos_embed(self, seq_len, device, dtype=None):
         """Generate positional embedding for any sequence length"""
+        if dtype is None:
+            dtype = torch.float32
+            
         # Create sinusoidal positional embedding
-        pos = torch.arange(seq_len, device=device).float().unsqueeze(1)
+        pos = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
         dim = self.hidden_size
         
         # Create frequency bands
-        div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * 
+        div_term = torch.exp(torch.arange(0, dim, 2, device=device, dtype=dtype) * 
                            -(math.log(10000.0) / dim))
         
         # Compute sinusoidal embeddings
-        pos_embed = torch.zeros(seq_len, dim, device=device)
+        pos_embed = torch.zeros(seq_len, dim, device=device, dtype=dtype)
         pos_embed[:, 0::2] = torch.sin(pos * div_term)
         pos_embed[:, 1::2] = torch.cos(pos * div_term)
         
@@ -223,17 +226,23 @@ class WanDiT(nn.Module):
         
         # Add positional embedding - computed dynamically
         seq_len = x.shape[1]
-        pos_embed = self._get_pos_embed(seq_len, x.device)
+        pos_embed = self._get_pos_embed(seq_len, x.device, dtype=x.dtype)
         x = x + pos_embed
         
         # Time conditioning
         t_emb = self.time_embed(timesteps)
         t_emb = self.time_mlp(t_emb)
         
+        # Ensure time embedding has same dtype as context
+        t_emb = t_emb.to(dtype=context.dtype)
+        
         # Project context - create embedder if needed
         if self.context_embedder is None:
             context_dim = context.shape[-1]
-            self.context_embedder = nn.Linear(context_dim, self.hidden_size).to(context.device)
+            self.context_embedder = nn.Linear(context_dim, self.hidden_size).to(
+                device=context.device, 
+                dtype=context.dtype
+            )
         
         c = self.context_embedder(context.mean(dim=1))  # Pool sequence
         c = c + t_emb
