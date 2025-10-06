@@ -220,6 +220,11 @@ class WanDiT(nn.Module):
         """
         B, C, T, H, W = x.shape
         
+        # Ensure input has same dtype as model
+        model_dtype = next(self.parameters()).dtype
+        x = x.to(dtype=model_dtype)
+        timesteps = timesteps.to(dtype=model_dtype)
+        
         # Patchify
         x = self.patch_embed(x)  # [B, hidden_size, T', H', W']
         x = rearrange(x, 'b c t h w -> b (t h w) c')
