@@ -709,21 +709,30 @@ class WanImageToVideo:
 
 
 class EulerSampler:
-    """Euler sampling method"""
+    """Euler sampling method for diffusion denoising"""
     @staticmethod
-    def step(model, x, sigma, sigma_next, cond, uncond, cfg_scale):
-        """Single Euler step"""
-        # Predict noise with conditioning
+    def step(model, x, t, t_next, cond, uncond, cfg_scale):
+        """Single Euler step - denoises the input"""
+        # Model predicts the denoised output (v-prediction or x0-prediction)
         with torch.no_grad():
-            noise_pred_cond = model(x, sigma, cond)
-            noise_pred_uncond = model(x, sigma, uncond)
+            pred_cond = model(x, t, cond)
+            pred_uncond = model(x, t, uncond)
         
         # Classifier-free guidance
-        noise_pred = noise_pred_uncond + cfg_scale * (noise_pred_cond - noise_pred_uncond)
+        pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
         
-        # Euler step
-        dt = sigma_next - sigma
-        x = x + noise_pred * dt
+        # Euler method: move from current noisy x towards predicted clean image
+        # Standard DDIM/Euler formula for denoising
+        sigma = t / 1000.0  # Convert timestep to sigma
+        sigma_next = t_next / 1000.0
+        
+        # Denoising step
+        if sigma_next > 0:
+            # Intermediate step
+            x = x + (pred - x) * ((sigma - sigma_next) / sigma)
+        else:
+            # Final step
+            x = pred
         
         return x
 
