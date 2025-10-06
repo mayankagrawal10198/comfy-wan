@@ -605,7 +605,9 @@ class KSamplerAdvanced:
         end_step = min(end_at_step, steps)
         
         # Sampling loop
+        import time
         for i in range(start_at_step, end_step):
+            step_start = time.time()
             sigma = sigmas[i]
             sigma_next = sigmas[i + 1] if i < steps else torch.zeros(1)
             
@@ -619,6 +621,13 @@ class KSamplerAdvanced:
                 )
             else:
                 raise NotImplementedError(f"Sampler {sampler_name} not implemented")
+            
+            # Print progress
+            step_time = time.time() - step_start
+            progress = ((i - start_at_step + 1) / (end_step - start_at_step)) * 100
+            elapsed = (i - start_at_step + 1) * step_time
+            remaining = ((end_step - start_at_step) - (i - start_at_step + 1)) * step_time
+            print(f"      Step {i+1}/{end_step}: {step_time:.2f}s | Progress: {progress:.0f}% | Elapsed: {elapsed:.1f}s | Remaining: ~{remaining:.1f}s")
                 
         return x
 
@@ -1008,23 +1017,34 @@ class WAN22PipelineAdvanced(WAN22Pipeline):
         Generate with 4-step LoRA (faster inference)
         Matches the fp8_scaled + 4steps LoRA workflow
         """
+        import time
+        
         print("\n" + "="*60)
         print("Starting 4-Step LoRA Video Generation")
         print("="*60)
         
+        start_total = time.time()
+        
         # Encode prompts
         print("\n[1/5] Encoding prompts...")
+        step_start = time.time()
         positive_cond = self.clip_encode.encode(prompt)
         negative_cond = self.clip_encode.encode(negative_prompt)
+        step_time = time.time() - step_start
+        print(f"      ✓ Completed in {step_time:.2f}s")
         
         # Prepare video latents
-        print(f"[2/5] Preparing video latents ({width}x{height}, {num_frames} frames)...")
+        print(f"\n[2/5] Preparing video latents ({width}x{height}, {num_frames} frames)...")
+        step_start = time.time()
         positive_cond, negative_cond, video_latent = self.image_to_video.prepare(
             positive_cond, negative_cond, image_path, width, height, num_frames
         )
+        step_time = time.time() - step_start
+        print(f"      ✓ Completed in {step_time:.2f}s")
         
         # High noise - 4 steps (0-2)
-        print("[3/5] Running high noise sampling (2 steps)...")
+        print("\n[3/5] Running high noise sampling (2 steps)...")
+        step_start = time.time()
         sampler_high = KSamplerAdvanced(self.transformer_high, self.device)
         latent_mid = sampler_high.sample(
             positive_cond, negative_cond, video_latent,
@@ -1033,9 +1053,12 @@ class WAN22PipelineAdvanced(WAN22Pipeline):
             start_at_step=0, end_at_step=2,
             return_with_leftover_noise="enable"
         )
+        step_time = time.time() - step_start
+        print(f"      ✓ Completed in {step_time:.2f}s")
         
         # Low noise - 4 steps (2-4)
-        print("      Running low noise sampling (2 steps)...")
+        print("\n[4/5] Running low noise sampling (2 steps)...")
+        step_start = time.time()
         sampler_low = KSamplerAdvanced(self.transformer_low, self.device)
         latent_final = sampler_low.sample(
             positive_cond, negative_cond, latent_mid,
@@ -1044,17 +1067,26 @@ class WAN22PipelineAdvanced(WAN22Pipeline):
             start_at_step=2, end_at_step=4,
             return_with_leftover_noise="disable"
         )
+        step_time = time.time() - step_start
+        print(f"      ✓ Completed in {step_time:.2f}s")
         
         # Decode
-        print("[4/5] Decoding latents...")
+        print("\n[5/5] Decoding latents...")
+        step_start = time.time()
         video_tensor = self.vae_decode.decode(latent_final)
+        step_time = time.time() - step_start
+        print(f"      ✓ Completed in {step_time:.2f}s")
         
         # Optional: Apply RIFE interpolation (Node 110)
         # This would double the frame rate
         
         frames = self._tensor_to_frames(video_tensor)
         
-        print(f"\n✓ 4-step generation complete! {len(frames)} frames")
+        total_time = time.time() - start_total
+        print(f"\n{'='*60}")
+        print(f"✓ 4-step generation complete! {len(frames)} frames")
+        print(f"✓ Total generation time: {total_time:.2f}s ({total_time/60:.2f} minutes)")
+        print(f"{'='*60}")
         return frames
 
 
