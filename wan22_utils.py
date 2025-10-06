@@ -46,6 +46,11 @@ class TiledVAE:
         return tiles
         
     @torch.no_grad()
+    def encode(self, x):
+        """Main encode method - calls encode_tiled"""
+        return self.encode_tiled(x)
+    
+    @torch.no_grad()
     def encode_tiled(self, x):
         """Encode with tiling"""
         B, C, T, H, W = x.shape
@@ -86,6 +91,11 @@ class TiledVAE:
         latent = latent / count.clamp(min=1)
         return latent
         
+    @torch.no_grad()
+    def decode(self, latent):
+        """Main decode method - calls decode_tiled"""
+        return self.decode_tiled(latent)
+    
     @torch.no_grad()
     def decode_tiled(self, latent):
         """Decode with tiling - critical for video generation"""
