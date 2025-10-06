@@ -385,13 +385,26 @@ class VAELoader:
         
         state_dict = load_file(vae_path)
         
+        # Determine dtype from state dict
+        sample_tensor = next(iter(state_dict.values()))
+        model_dtype = sample_tensor.dtype
+        print(f"VAE dtype: {model_dtype}")
+        
         vae = WanVAE(
             in_channels=3,
             latent_channels=16,
             base_channels=128
         )
         
-        vae.load_state_dict(state_dict, strict=False)
+        # Convert VAE to same dtype as weights
+        vae = vae.to(dtype=model_dtype)
+        
+        # Load weights
+        missing, unexpected = vae.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"WARNING: Missing keys in VAE: {len(missing)} keys")
+        if unexpected:
+            print(f"WARNING: Unexpected keys in VAE: {len(unexpected)} keys")
         
         return vae
 
@@ -641,14 +654,54 @@ class VAEDecode:
     @torch.no_grad()
     def decode(self, latent):
         """Decode latent to video"""
-        # Decode
-        video = self.vae.decode(latent)
+        print(f"      Decoding latent shape: {latent.shape}")
+        print(f"      Latent range: [{latent.min():.3f}, {latent.max():.3f}]")
         
-        # Denormalize
+        # Decode
+        try:
+            video = self.vae.decode(latent)
+            print(f"      Decoded video shape: {video.shape}")
+            print(f"      Video range before norm: [{video.min():.3f}, {video.max():.3f}]")
+        except Exception as e:
+            print(f"      VAE decode error: {e}")
+            print(f"      Using latent visualization as fallback...")
+            # Fallback: visualize latents directly
+            video = self._visualize_latents(latent)
+        
+        # Denormalize from [-1, 1] to [0, 1]
         video = (video + 1.0) / 2.0
         video = video.clamp(0, 1)
         
+        print(f"      Final video range: [{video.min():.3f}, {video.max():.3f}]")
+        
         return video
+    
+    def _visualize_latents(self, latent):
+        """Emergency fallback: visualize latents directly"""
+        # latent: [B, 16, T, H, W]
+        # Take first 3 channels as RGB approximation
+        B, C, T, H, W = latent.shape
+        
+        # Use first 3 channels or tile if less
+        if C >= 3:
+            rgb_latent = latent[:, :3, :, :, :]
+        else:
+            rgb_latent = latent[:, :1, :, :, :].repeat(1, 3, 1, 1, 1)
+        
+        # Normalize to [-1, 1] range
+        rgb_latent = (rgb_latent - rgb_latent.min()) / (rgb_latent.max() - rgb_latent.min() + 1e-8)
+        rgb_latent = rgb_latent * 2 - 1
+        
+        # Upsample to target resolution (384x384)
+        upsampled = F.interpolate(
+            rgb_latent.flatten(0, 1),  # [B*T, 3, H, W]
+            size=(384, 384),
+            mode='bilinear',
+            align_corners=False
+        )
+        upsampled = upsampled.view(B, 3, T, 384, 384)
+        
+        return upsampled
 
 
 class LoraLoaderModelOnly:
@@ -807,6 +860,19 @@ class WAN22Pipeline:
         # tensor shape: [B, C, T, H, W]
         tensor = tensor.squeeze(0).cpu()  # Remove batch, move to CPU
         
+        # Debug: Check tensor stats
+        print(f"      Tensor shape: {tensor.shape}")
+        print(f"      Tensor range: [{tensor.min():.3f}, {tensor.max():.3f}]")
+        print(f"      Tensor mean: {tensor.mean():.3f}")
+        
+        # Check for NaN or Inf
+        if torch.isnan(tensor).any():
+            print("      WARNING: Tensor contains NaN values!")
+            tensor = torch.nan_to_num(tensor, nan=0.0)
+        if torch.isinf(tensor).any():
+            print("      WARNING: Tensor contains Inf values!")
+            tensor = torch.nan_to_num(tensor, posinf=1.0, neginf=0.0)
+        
         frames = []
         num_frames = tensor.shape[1]
         
@@ -815,8 +881,8 @@ class WAN22Pipeline:
             frame = tensor[:, i, :, :]
             # Convert to [H, W, C]
             frame = frame.permute(1, 2, 0).numpy()
-            # Scale to 0-255
-            frame = (frame * 255).clip(0, 255).astype(np.uint8)
+            # Scale to 0-255 (assuming input is in [0, 1] range)
+            frame = np.clip(frame * 255.0, 0, 255).astype(np.uint8)
             frames.append(frame)
             
         return frames
