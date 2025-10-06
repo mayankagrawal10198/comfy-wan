@@ -237,29 +237,33 @@ class WanVAE(nn.Module):
         super().__init__()
         self.latent_channels = latent_channels
         
-        # Encoder
+        # Encoder - More robust architecture
         self.encoder = nn.Sequential(
+            # First conv - no stride
             nn.Conv3d(in_channels, base_channels, 3, padding=1),
             nn.GroupNorm(32, base_channels),
             nn.SiLU(),
-            nn.Conv3d(base_channels, base_channels * 2, 4, stride=2, padding=1),
+            # Downsample 1
+            nn.Conv3d(base_channels, base_channels * 2, 3, stride=2, padding=1),
             nn.GroupNorm(32, base_channels * 2),
             nn.SiLU(),
-            nn.Conv3d(base_channels * 2, base_channels * 4, 4, stride=2, padding=1),
+            # Downsample 2  
+            nn.Conv3d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
             nn.GroupNorm(32, base_channels * 4),
             nn.SiLU(),
+            # Final conv
             nn.Conv3d(base_channels * 4, latent_channels, 3, padding=1)
         )
         
-        # Decoder
+        # Decoder - Fixed architecture to match encoder
         self.decoder = nn.Sequential(
             nn.Conv3d(latent_channels, base_channels * 4, 3, padding=1),
             nn.GroupNorm(32, base_channels * 4),
             nn.SiLU(),
-            nn.ConvTranspose3d(base_channels * 4, base_channels * 2, 4, stride=2, padding=1),
+            nn.ConvTranspose3d(base_channels * 4, base_channels * 2, 3, stride=2, padding=1, output_padding=1),
             nn.GroupNorm(32, base_channels * 2),
             nn.SiLU(),
-            nn.ConvTranspose3d(base_channels * 2, base_channels, 4, stride=2, padding=1),
+            nn.ConvTranspose3d(base_channels * 2, base_channels, 3, stride=2, padding=1, output_padding=1),
             nn.GroupNorm(32, base_channels),
             nn.SiLU(),
             nn.Conv3d(base_channels, in_channels, 3, padding=1)
@@ -408,8 +412,30 @@ class WanImageToVideo:
         # Load and preprocess image
         image = self._load_image(start_image_path, width, height)
         
-        # Encode image to latent
-        image_latent = self.vae.encode(image.unsqueeze(2))  # Add temporal dim
+        # Add temporal dimension for 3D VAE
+        # Shape: [B, C, H, W] -> [B, C, T, H, W]
+        image_3d = image.unsqueeze(2)  # Add temporal dim
+        
+        try:
+            # Encode image to latent
+            image_latent = self.vae.encode(image_3d)
+        except RuntimeError as e:
+            if "Kernel size can't be greater than actual input size" in str(e):
+                print(f"VAE dimension error, trying with smaller resolution...")
+                # Fallback: resize to smaller dimensions
+                smaller_size = min(512, width, height)
+                image_small = self._load_image(start_image_path, smaller_size, smaller_size)
+                image_3d_small = image_small.unsqueeze(2)
+                image_latent = self.vae.encode(image_3d_small)
+                # Upsample latent to match expected size
+                image_latent = F.interpolate(
+                    image_latent, 
+                    size=(length, height//8, width//8), 
+                    mode='trilinear', 
+                    align_corners=False
+                )
+            else:
+                raise e
         
         # Expand to video length
         video_latent = image_latent.repeat(1, 1, length, 1, 1)
@@ -423,6 +449,14 @@ class WanImageToVideo:
         
         img_array = np.array(img).astype(np.float32) / 255.0
         img_array = (img_array - 0.5) * 2  # Normalize to [-1, 1]
+        
+        # Ensure dimensions are compatible with VAE
+        # Pad to make dimensions divisible by 8 (common VAE requirement)
+        pad_h = (8 - height % 8) % 8
+        pad_w = (8 - width % 8) % 8
+        
+        if pad_h > 0 or pad_w > 0:
+            img_array = np.pad(img_array, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge')
         
         img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
         return img_tensor.to(self.device)

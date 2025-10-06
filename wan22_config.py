@@ -179,9 +179,9 @@ class ConfigPresets:
                 lora_low="models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
             ),
             generation=GenerationConfig(
-                width=1024,
-                height=1024,
-                num_frames=129,
+                width=512,  # Reduced from 1024 to avoid VAE issues
+                height=512,  # Reduced from 1024 to avoid VAE issues
+                num_frames=81,  # Reduced from 129 for memory efficiency
                 steps=4,
                 cfg_scale=1.0,
                 fps=16,
@@ -189,7 +189,8 @@ class ConfigPresets:
                 low_noise_steps=(2, 4)
             ),
             memory=MemoryConfig(
-                enable_vae_tiling=True
+                enable_vae_tiling=True,
+                vae_tile_size=256  # Smaller tiles for 512x512
             ),
             postprocess=PostProcessConfig(
                 enable_interpolation=True,
