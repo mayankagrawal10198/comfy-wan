@@ -435,21 +435,19 @@ class WanVAE(nn.Module):
         """Encode video to latent with KL divergence"""
         # Check if using bypass mode
         if hasattr(self, '_bypass_mode') and self._bypass_mode:
-            # Simplified encoding: just downsample and convert channels
+            # Simplified encoding: just downsample spatially, keep temporal dimension
             B, C, T, H, W = x.shape
-            # Downsample spatially (8x) and temporally (4x)
+            # Only downsample spatially (8x), keep frames the same
             x_down = F.interpolate(
                 x.flatten(0, 1),  # [B*T, C, H, W]
                 scale_factor=0.125,  # 8x spatial reduction
                 mode='bilinear',
                 align_corners=False
             )
-            x_down = x_down.view(B, C, T, H//8, W//8)
-            # Temporal downsampling
-            x_down = x_down[:, :, ::4, :, :]  # 4x temporal reduction
+            x_down = x_down.view(B, C, T, H//8, W//8)  # Keep T unchanged
             
             # Simple channel expansion to 16 channels
-            latent = torch.randn(B, 16, T//4, H//8, W//8, device=x.device, dtype=x.dtype) * 0.1
+            latent = torch.randn(B, 16, T, H//8, W//8, device=x.device, dtype=x.dtype) * 0.1
             latent[:, :3, :, :, :] = x_down * self.scaling_factor
             return latent
         
@@ -475,23 +473,20 @@ class WanVAE(nn.Module):
         """Decode latent to video"""
         # Check if using bypass mode
         if hasattr(self, '_bypass_mode') and self._bypass_mode:
-            # Simplified decoding: upsample to original size
+            # Simplified decoding: upsample spatially only
             B, C, T, H, W = z.shape
             
             # Take first 3 channels and rescale
             rgb = z[:, :3, :, :, :] / self.scaling_factor
             
-            # Temporal upsampling (4x)
-            rgb = rgb.repeat_interleave(4, dim=2)
-            
-            # Spatial upsampling (8x)
+            # Spatial upsampling (8x) - keep temporal dimension unchanged
             rgb_up = F.interpolate(
                 rgb.flatten(0, 1),  # [B*T, 3, H, W]
                 scale_factor=8.0,
                 mode='bilinear',
                 align_corners=False
             )
-            rgb_up = rgb_up.view(B, 3, T*4, H*8, W*8)
+            rgb_up = rgb_up.view(B, 3, T, H*8, W*8)  # T stays the same
             
             return torch.tanh(rgb_up)  # Return in [-1, 1] range
         
