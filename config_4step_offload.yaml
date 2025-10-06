@@ -1,0 +1,40 @@
+model:
+  text_encoder: "models/text_encoders/umt5_xxl_fp16.safetensors"
+  vae: "models/vae/wan_2.1_vae.safetensors"
+  transformer_high: "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors"
+  transformer_low: "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors"
+  lora_high: "models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+  lora_low: "models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+
+generation:
+  width: 1024
+  height: 1024
+  num_frames: 129
+  steps: 4
+  cfg_scale: 1.0
+  seed: null
+  fps: 16
+  sampler: "euler"
+  scheduler: "simple"
+  shift: 8.0
+  high_noise_steps: [0, 2]
+  low_noise_steps: [2, 4]
+
+memory:
+  device: "cuda"
+  dtype: "float16"
+  enable_group_offload: true
+  enable_model_cpu_offload: false
+  enable_sequential_cpu_offload: false
+  enable_vae_tiling: true
+  vae_tile_size: 512
+  vae_tile_overlap: 64
+
+postprocess:
+  enable_interpolation: true
+  interpolation_multiplier: 2
+  interpolation_model: "rife47.pth"
+  enable_sharpening: false
+  sharpening_strength: 0.5
+  enable_denoising: false
+  denoising_strength: 5
