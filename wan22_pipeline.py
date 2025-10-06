@@ -38,7 +38,7 @@ class TimestepEmbedding(nn.Module):
 
 
 class Attention3D(nn.Module):
-    """3D Attention for video generation"""
+    """3D Attention for video generation with memory-efficient attention"""
     def __init__(self, dim, num_heads=8, qkv_bias=False):
         super().__init__()
         self.num_heads = num_heads
@@ -53,14 +53,36 @@ class Attention3D(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        if mask is not None:
-            attn = attn.masked_fill(mask == 0, float('-inf'))
-        attn = attn.softmax(dim=-1)
+        # Use scaled_dot_product_attention for memory efficiency (Flash Attention)
+        try:
+            # PyTorch 2.0+ has built-in memory-efficient attention
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=self.scale)
+            x = x.transpose(1, 2).reshape(B, N, C)
+        except AttributeError:
+            # Fallback to chunked attention for older PyTorch versions
+            x = self._chunked_attention(q, k, v, mask)
         
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         return x
+    
+    def _chunked_attention(self, q, k, v, mask=None, chunk_size=4096):
+        """Compute attention in chunks to save memory"""
+        B, H, N, D = q.shape
+        output = torch.zeros_like(q)
+        
+        # Process in chunks
+        for i in range(0, N, chunk_size):
+            end_i = min(i + chunk_size, N)
+            q_chunk = q[:, :, i:end_i, :]
+            
+            attn = (q_chunk @ k.transpose(-2, -1)) * self.scale
+            if mask is not None:
+                attn = attn.masked_fill(mask[:, :, i:end_i, :] == 0, float('-inf'))
+            attn = attn.softmax(dim=-1)
+            
+            output[:, :, i:end_i, :] = attn @ v
+        
+        return output.transpose(1, 2).reshape(B, N, -1)
 
 
 class FeedForward(nn.Module):
