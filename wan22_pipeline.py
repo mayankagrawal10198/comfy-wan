@@ -149,8 +149,8 @@ class WanDiT(nn.Module):
             kernel_size=patch_size, stride=patch_size
         )
         
-        # Positional embedding
-        self.pos_embed = nn.Parameter(torch.zeros(1, 1000, hidden_size))
+        # Positional embedding - will be computed dynamically
+        self.max_seq_len = 100000  # Large enough for any reasonable sequence
         
         # Time embedding
         self.time_embed = TimestepEmbedding(hidden_size)
@@ -171,10 +171,27 @@ class WanDiT(nn.Module):
             nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels)
         )
         
-        # Conditioning projections
-        self.context_embedder = nn.Linear(4096, hidden_size)  # For T5 embeddings
+        # Conditioning projections - dynamic input size
+        self.context_embedder = None  # Will be created dynamically
         
         self.initialize_weights()
+        
+    def _get_pos_embed(self, seq_len, device):
+        """Generate positional embedding for any sequence length"""
+        # Create sinusoidal positional embedding
+        pos = torch.arange(seq_len, device=device).float().unsqueeze(1)
+        dim = self.hidden_size
+        
+        # Create frequency bands
+        div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * 
+                           -(math.log(10000.0) / dim))
+        
+        # Compute sinusoidal embeddings
+        pos_embed = torch.zeros(seq_len, dim, device=device)
+        pos_embed[:, 0::2] = torch.sin(pos * div_term)
+        pos_embed[:, 1::2] = torch.cos(pos * div_term)
+        
+        return pos_embed.unsqueeze(0)  # [1, seq_len, dim]
         
     def initialize_weights(self):
         # Initialize weights
@@ -204,14 +221,20 @@ class WanDiT(nn.Module):
         x = self.patch_embed(x)  # [B, hidden_size, T', H', W']
         x = rearrange(x, 'b c t h w -> b (t h w) c')
         
-        # Add positional embedding
-        x = x + self.pos_embed[:, :x.shape[1], :]
+        # Add positional embedding - computed dynamically
+        seq_len = x.shape[1]
+        pos_embed = self._get_pos_embed(seq_len, x.device)
+        x = x + pos_embed
         
         # Time conditioning
         t_emb = self.time_embed(timesteps)
         t_emb = self.time_mlp(t_emb)
         
-        # Project context
+        # Project context - create embedder if needed
+        if self.context_embedder is None:
+            context_dim = context.shape[-1]
+            self.context_embedder = nn.Linear(context_dim, self.hidden_size).to(context.device)
+        
         c = self.context_embedder(context.mean(dim=1))  # Pool sequence
         c = c + t_emb
         
