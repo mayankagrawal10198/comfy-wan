@@ -294,95 +294,215 @@ class WanDiT(nn.Module):
         return x
 
 
+class CausalConv3d(nn.Module):
+    """Causal 3D Convolution for temporal causality"""
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv3d(
+            in_channels, out_channels, 
+            kernel_size=(kernel_size, kernel_size, kernel_size),
+            stride=(stride, stride, stride),
+            padding=(0, padding, padding)  # No padding on temporal dimension
+        )
+        self.temporal_padding = kernel_size - 1
+        
+    def forward(self, x):
+        # Pad temporally in causal manner (only past frames)
+        x = F.pad(x, (0, 0, 0, 0, self.temporal_padding, 0))
+        return self.conv(x)
+
+
+class ResidualBlock3D(nn.Module):
+    """3D Residual Block with GroupNorm and SiLU"""
+    def __init__(self, channels):
+        super().__init__()
+        self.norm1 = nn.GroupNorm(32, channels)
+        self.conv1 = nn.Conv3d(channels, channels, 3, padding=1)
+        self.norm2 = nn.GroupNorm(32, channels)
+        self.conv2 = nn.Conv3d(channels, channels, 3, padding=1)
+        self.activation = nn.SiLU()
+        
+    def forward(self, x):
+        residual = x
+        x = self.norm1(x)
+        x = self.activation(x)
+        x = self.conv1(x)
+        x = self.norm2(x)
+        x = self.activation(x)
+        x = self.conv2(x)
+        return x + residual
+
+
+class DownsampleBlock3D(nn.Module):
+    """3D Downsampling block with residual connections"""
+    def __init__(self, in_channels, out_channels, temporal_downsample=False):
+        super().__init__()
+        stride = (2, 2, 2) if temporal_downsample else (1, 2, 2)
+        
+        self.conv = nn.Conv3d(in_channels, out_channels, 3, stride=stride, padding=1)
+        self.res_block = ResidualBlock3D(out_channels)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.res_block(x)
+        return x
+
+
+class UpsampleBlock3D(nn.Module):
+    """3D Upsampling block with residual connections"""
+    def __init__(self, in_channels, out_channels, temporal_upsample=False):
+        super().__init__()
+        scale_factor = (2, 2, 2) if temporal_upsample else (1, 2, 2)
+        self.scale_factor = scale_factor
+        
+        self.conv = nn.Conv3d(in_channels, out_channels, 3, padding=1)
+        self.res_block = ResidualBlock3D(out_channels)
+        
+    def forward(self, x):
+        x = F.interpolate(x, scale_factor=self.scale_factor, mode='nearest')
+        x = self.conv(x)
+        x = self.res_block(x)
+        return x
+
+
 class WanVAE(nn.Module):
-    """Wan VAE for encoding/decoding video"""
+    """
+    AutoencoderKLCausal3D for WAN 2.2
+    Based on ComfyUI's implementation with:
+    - 8x spatial compression
+    - 4x temporal compression
+    - 16-channel latent space
+    - Causal temporal processing
+    """
     def __init__(self, in_channels=3, latent_channels=16, base_channels=128):
         super().__init__()
         self.latent_channels = latent_channels
         
-        # Encoder - More robust architecture
-        self.encoder = nn.Sequential(
-            # First conv - no stride
-            nn.Conv3d(in_channels, base_channels, 3, padding=1),
-            nn.GroupNorm(32, base_channels),
-            nn.SiLU(),
-            # Downsample 1
-            nn.Conv3d(base_channels, base_channels * 2, 3, stride=2, padding=1),
-            nn.GroupNorm(32, base_channels * 2),
-            nn.SiLU(),
-            # Downsample 2  
-            nn.Conv3d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1),
+        # Encoder: 3→128→256→512→512→16
+        self.encoder = nn.ModuleList([
+            # Initial conv
+            CausalConv3d(in_channels, base_channels, 3, 1, 1),
+            
+            # Downsample 1: H/2, W/2
+            DownsampleBlock3D(base_channels, base_channels * 2, temporal_downsample=False),
+            
+            # Downsample 2: H/4, W/4, T/2
+            DownsampleBlock3D(base_channels * 2, base_channels * 4, temporal_downsample=True),
+            
+            # Downsample 3: H/8, W/8, T/4
+            DownsampleBlock3D(base_channels * 4, base_channels * 4, temporal_downsample=True),
+            
+            # Residual blocks
+            ResidualBlock3D(base_channels * 4),
+            ResidualBlock3D(base_channels * 4),
+            
+            # To latent
             nn.GroupNorm(32, base_channels * 4),
             nn.SiLU(),
-            # Final conv
-            nn.Conv3d(base_channels * 4, latent_channels, 3, padding=1)
-        )
+            nn.Conv3d(base_channels * 4, latent_channels * 2, 3, padding=1),  # *2 for mean and logvar
+        ])
         
-        # Decoder - Fixed architecture to match encoder
-        self.decoder = nn.Sequential(
+        # Decoder: 16→512→512→256→128→3
+        self.decoder = nn.ModuleList([
+            # From latent
             nn.Conv3d(latent_channels, base_channels * 4, 3, padding=1),
-            nn.GroupNorm(32, base_channels * 4),
-            nn.SiLU(),
-            nn.ConvTranspose3d(base_channels * 4, base_channels * 2, 3, stride=2, padding=1, output_padding=1),
-            nn.GroupNorm(32, base_channels * 2),
-            nn.SiLU(),
-            nn.ConvTranspose3d(base_channels * 2, base_channels, 3, stride=2, padding=1, output_padding=1),
+            
+            # Residual blocks
+            ResidualBlock3D(base_channels * 4),
+            ResidualBlock3D(base_channels * 4),
+            
+            # Upsample 1: T*2
+            UpsampleBlock3D(base_channels * 4, base_channels * 4, temporal_upsample=True),
+            
+            # Upsample 2: T*4, H*2, W*2
+            UpsampleBlock3D(base_channels * 4, base_channels * 2, temporal_upsample=True),
+            
+            # Upsample 3: H*4, W*4
+            UpsampleBlock3D(base_channels * 2, base_channels, temporal_upsample=False),
+            
+            # Upsample 4: H*8, W*8
+            UpsampleBlock3D(base_channels, base_channels, temporal_upsample=False),
+            
+            # Final conv
             nn.GroupNorm(32, base_channels),
             nn.SiLU(),
-            nn.Conv3d(base_channels, in_channels, 3, padding=1)
-        )
+            nn.Conv3d(base_channels, in_channels, 3, padding=1),
+        ])
         
-        self.scaling_factor = 0.18215
+        self.scaling_factor = 0.13025  # WAN 2.2 specific scaling factor
         
     def encode(self, x):
-        """Encode video to latent"""
+        """Encode video to latent with KL divergence"""
         # Check if using bypass mode
         if hasattr(self, '_bypass_mode') and self._bypass_mode:
             # Simplified encoding: just downsample and convert channels
             B, C, T, H, W = x.shape
-            # Downsample spatially (4x reduction)
+            # Downsample spatially (8x) and temporally (4x)
             x_down = F.interpolate(
                 x.flatten(0, 1),  # [B*T, C, H, W]
-                scale_factor=0.25,
+                scale_factor=0.125,  # 8x spatial reduction
                 mode='bilinear',
                 align_corners=False
             )
-            x_down = x_down.view(B, C, T, H//4, W//4)
+            x_down = x_down.view(B, C, T, H//8, W//8)
+            # Temporal downsampling
+            x_down = x_down[:, :, ::4, :, :]  # 4x temporal reduction
             
             # Simple channel expansion to 16 channels
-            latent = torch.randn(B, 16, T, H//4, W//4, device=x.device, dtype=x.dtype) * 0.5
-            latent[:, :3, :, :, :] = x_down * 0.18215
+            latent = torch.randn(B, 16, T//4, H//8, W//8, device=x.device, dtype=x.dtype) * 0.1
+            latent[:, :3, :, :, :] = x_down * self.scaling_factor
             return latent
         
         # Convert input to same dtype as encoder
-        encoder_dtype = next(self.encoder.parameters()).dtype
-        x = x.to(dtype=encoder_dtype)
-        h = self.encoder(x)
-        return h * self.scaling_factor
+        x = x.to(dtype=next(self.encoder[0].conv.weight.data.dtype))
+        
+        # Forward through encoder
+        h = x
+        for layer in self.encoder:
+            h = layer(h)
+        
+        # Split into mean and logvar for KL
+        mean, logvar = torch.chunk(h, 2, dim=1)
+        
+        # Sample from latent distribution (reparameterization trick)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mean + eps * std
+        
+        return z * self.scaling_factor
         
     def decode(self, z):
         """Decode latent to video"""
         # Check if using bypass mode
         if hasattr(self, '_bypass_mode') and self._bypass_mode:
-            # Simplified decoding: upsample and take first 3 channels
+            # Simplified decoding: upsample to original size
             B, C, T, H, W = z.shape
             
             # Take first 3 channels and rescale
-            rgb = z[:, :3, :, :, :] / 0.18215
+            rgb = z[:, :3, :, :, :] / self.scaling_factor
             
-            # Upsample spatially (4x increase)
+            # Temporal upsampling (4x)
+            rgb = rgb.repeat_interleave(4, dim=2)
+            
+            # Spatial upsampling (8x)
             rgb_up = F.interpolate(
                 rgb.flatten(0, 1),  # [B*T, 3, H, W]
-                scale_factor=4.0,
+                scale_factor=8.0,
                 mode='bilinear',
                 align_corners=False
             )
-            rgb_up = rgb_up.view(B, 3, T, H*4, W*4)
+            rgb_up = rgb_up.view(B, 3, T*4, H*8, W*8)
             
             return torch.tanh(rgb_up)  # Return in [-1, 1] range
         
         z = z / self.scaling_factor
-        return self.decoder(z)
+        
+        # Forward through decoder
+        h = z
+        for layer in self.decoder:
+            h = layer(h)
+        
+        return h
 
 
 # ==================== COMFYUI NODE IMPLEMENTATIONS ====================
