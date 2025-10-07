@@ -442,7 +442,7 @@ class WanVAE(nn.Module):
             nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.Conv3d(256, latent_channels, kernel_size=3, stride=1, padding=1),
+            nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),  # *2 for mean and logvar
         ])
         
         # Decoder layers (based on actual model)
@@ -525,24 +525,9 @@ class WanVAE(nn.Module):
             h = layer(h)
             print(f"      Encoder layer {i}: {h.shape}")
         
-        # Apply conv2 (final encoder layer)
-        h = self.conv2(h)
-        print(f"      After conv2: {h.shape}")
-        
-        # Ensure we have 16 channels for the latent space
-        if h.shape[1] != 16:
-            print(f"      WARNING: VAE output has {h.shape[1]} channels, expected 16. Padding with zeros...")
-            # Pad to 16 channels
-            if h.shape[1] < 16:
-                padding = torch.zeros(h.shape[0], 16 - h.shape[1], h.shape[2], h.shape[3], h.shape[4], 
-                                   device=h.device, dtype=h.dtype)
-                h = torch.cat([h, padding], dim=1)
-            else:
-                # If more than 16 channels, take first 16
-                h = h[:, :16, :, :, :]
-        
-        # Split into mean and logvar for KL divergence
+        # Split into mean and logvar for KL divergence (h should now be 32 channels)
         mean, logvar = torch.chunk(h, 2, dim=1)
+        print(f"      Mean shape: {mean.shape}, Logvar shape: {logvar.shape}")
         
         # Sample from latent distribution (reparameterization trick)
         std = torch.exp(0.5 * logvar)
