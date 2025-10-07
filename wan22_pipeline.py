@@ -527,7 +527,15 @@ class UNETLoader:
         model = model.to(dtype=model_dtype)
         
         # Load weights
-        model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        
+        print(f"   Model keys - Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        
+        if len(missing) > 100 or len(unexpected) > 100:
+            print(f"   WARNING: Significant architecture mismatch!")
+            print(f"   Sample missing keys: {list(missing)[:3] if missing else []}")
+            print(f"   Sample unexpected keys: {list(unexpected)[:3] if unexpected else []}")
+            print(f"   The model may not work correctly without proper architecture.")
         
         return model
 
