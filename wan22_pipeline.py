@@ -515,7 +515,7 @@ class WanVAE(nn.Module):
         print(f"      Input dtype: {x.dtype}")
         
         # Convert input to same dtype as VAE weights
-        vae_dtype = next(self.encoder_downsamples[0].weight.data.dtype)
+        vae_dtype = self.encoder_downsamples[0].weight.data.dtype
         x = x.to(dtype=vae_dtype)
         print(f"      Converted input dtype: {x.dtype}")
         
@@ -551,7 +551,7 @@ class WanVAE(nn.Module):
         print(f"      Input dtype: {z.dtype}")
         
         # Convert input to same dtype as VAE weights
-        vae_dtype = next(self.decoder_conv1.weight.data.dtype)
+        vae_dtype = self.decoder_conv1.weight.data.dtype
         z = z.to(dtype=vae_dtype)
         print(f"      Converted latent dtype: {z.dtype}")
         
