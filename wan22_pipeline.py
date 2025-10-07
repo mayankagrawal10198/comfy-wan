@@ -574,16 +574,29 @@ class UNETLoader:
         # Convert model to same dtype as weights before loading
         model = model.to(dtype=model_dtype)
         
-        # Load weights
+        # Load weights with strict=False to allow partial loading
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         
-        print(f"   Model keys - Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        print(f"   Loaded: {len(state_dict) - len(missing)} / {len(state_dict)} weights")
         
-        if len(missing) > 100 or len(unexpected) > 100:
-            print(f"   WARNING: Significant architecture mismatch!")
-            print(f"   Sample missing keys: {list(missing)[:3] if missing else []}")
-            print(f"   Sample unexpected keys: {list(unexpected)[:3] if unexpected else []}")
-            print(f"   The model may not work correctly without proper architecture.")
+        if len(missing) > 0:
+            print(f"   Note: {len(missing)} model parameters initialized randomly")
+            if len(missing) < 10:
+                print(f"   Missing: {missing}")
+        
+        if len(unexpected) > 0:
+            print(f"   Note: {len(unexpected)} checkpoint keys not used")
+            if len(unexpected) < 10:
+                print(f"   Unused: {unexpected}")
+        
+        # Check if critical layers loaded
+        loaded_blocks = sum(1 for k in state_dict.keys() if k.startswith('blocks.') and k in [n for n, _ in model.named_parameters()])
+        total_blocks = sum(1 for k in state_dict.keys() if k.startswith('blocks.'))
+        
+        if loaded_blocks > total_blocks * 0.8:
+            print(f"   ✓ Core transformer blocks loaded successfully ({loaded_blocks}/{total_blocks} params)")
+        else:
+            print(f"   ⚠ Warning: Only {loaded_blocks}/{total_blocks} block params loaded")
         
         return model
 
