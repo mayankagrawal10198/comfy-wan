@@ -37,52 +37,96 @@ class TimestepEmbedding(nn.Module):
         return embedding
 
 
-class Attention3D(nn.Module):
-    """3D Attention for video generation with memory-efficient attention"""
-    def __init__(self, dim, num_heads=8, qkv_bias=False):
+class SelfAttention(nn.Module):
+    """Self-attention layer matching WAN 2.2 architecture"""
+    def __init__(self, dim, num_heads=8):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj = nn.Linear(dim, dim)
+        # Separate Q, K, V projections (matching real model)
+        self.q = nn.Linear(dim, dim, bias=True)
+        self.k = nn.Linear(dim, dim, bias=True)
+        self.v = nn.Linear(dim, dim, bias=True)
+        self.o = nn.Linear(dim, dim, bias=True)
         
-    def forward(self, x, mask=None):
+        # RMSNorm for Q and K
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_k = nn.LayerNorm(dim)
+        
+    def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
         
-        # Use scaled_dot_product_attention for memory efficiency (Flash Attention)
+        # Project Q, K, V
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
+        
+        # Apply normalization
+        q = self.norm_q(q)
+        k = self.norm_k(k)
+        
+        # Reshape for multi-head attention
+        q = q.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        
+        # Memory-efficient attention
         try:
-            # PyTorch 2.0+ has built-in memory-efficient attention
-            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=self.scale)
+            x = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
             x = x.transpose(1, 2).reshape(B, N, C)
-        except AttributeError:
-            # Fallback to chunked attention for older PyTorch versions
-            x = self._chunked_attention(q, k, v, mask)
-        
-        x = self.proj(x)
-        return x
-    
-    def _chunked_attention(self, q, k, v, mask=None, chunk_size=4096):
-        """Compute attention in chunks to save memory"""
-        B, H, N, D = q.shape
-        output = torch.zeros_like(q)
-        
-        # Process in chunks
-        for i in range(0, N, chunk_size):
-            end_i = min(i + chunk_size, N)
-            q_chunk = q[:, :, i:end_i, :]
-            
-            attn = (q_chunk @ k.transpose(-2, -1)) * self.scale
-            if mask is not None:
-                attn = attn.masked_fill(mask[:, :, i:end_i, :] == 0, float('-inf'))
+        except:
+            # Fallback
+            attn = (q @ k.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
-            
-            output[:, :, i:end_i, :] = attn @ v
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         
-        return output.transpose(1, 2).reshape(B, N, -1)
+        x = self.o(x)
+        return x
+
+
+class CrossAttention(nn.Module):
+    """Cross-attention layer for text conditioning"""
+    def __init__(self, dim, context_dim, num_heads=8):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+        
+        # Q from input, K and V from context
+        self.q = nn.Linear(dim, dim, bias=True)
+        self.k = nn.Linear(context_dim, dim, bias=True)
+        self.v = nn.Linear(context_dim, dim, bias=True)
+        self.o = nn.Linear(dim, dim, bias=True)
+        
+        # RMSNorm
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_k = nn.LayerNorm(dim)
+        
+    def forward(self, x, context):
+        B, N, C = x.shape
+        
+        q = self.norm_q(self.q(x))
+        k = self.norm_k(self.k(context))
+        v = self.v(context)
+        
+        # Reshape for multi-head
+        q = q.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(B, context.shape[1], self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(B, context.shape[1], self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        
+        # Attention
+        try:
+            x = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
+            x = x.transpose(1, 2).reshape(B, N, C)
+        except:
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        
+        x = self.o(x)
+        return x
 
 
 class FeedForward(nn.Module):
@@ -101,39 +145,47 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 
-class DiTBlock(nn.Module):
-    """Diffusion Transformer Block with adaptive layer norm"""
-    def __init__(self, dim, num_heads, mlp_ratio=4.0):
+class WanTransformerBlock(nn.Module):
+    """WAN 2.2 Transformer Block with self-attention, cross-attention, and FFN"""
+    def __init__(self, dim, context_dim, num_heads):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False)
-        self.attn = Attention3D(dim, num_heads=num_heads)
-        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = FeedForward(dim, mlp_hidden_dim)
+        self.dim = dim
         
-        # Adaptive layer norm parameters
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(dim, 6 * dim, bias=True)
+        # Self-attention
+        self.self_attn = SelfAttention(dim, num_heads)
+        
+        # Cross-attention
+        self.cross_attn = CrossAttention(dim, context_dim, num_heads)
+        
+        # Feed-forward network (FFN)
+        # From inspection: ffn.0 (13824 dim) and ffn.2 (back to 5120)
+        mlp_hidden = int(dim * 2.7)  # 5120 * 2.7 ≈ 13824
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, mlp_hidden, bias=True),  # ffn.0
+            nn.GELU(),
+            nn.Linear(mlp_hidden, dim, bias=True),  # ffn.2
         )
         
-    def forward(self, x, c):
+        # Layer norm
+        self.norm3 = nn.LayerNorm(dim, elementwise_affine=True)
+        
+        # Modulation parameters (adaptive layer norm)
+        # Shape: [1, 6, dim] from inspection
+        self.modulation = nn.Parameter(torch.zeros(1, 6, dim))
+        
+    def forward(self, x, context):
         """
         x: input features [B, N, D]
-        c: conditioning [B, D]
+        context: text conditioning [B, M, D_context]
         """
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
-            self.adaLN_modulation(c).chunk(6, dim=1)
+        # Self-attention
+        x = x + self.self_attn(x)
         
-        # Attention with modulation
-        x = x + gate_msa.unsqueeze(1) * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa)
-        )
+        # Cross-attention with text
+        x = x + self.cross_attn(x, context)
         
-        # MLP with modulation
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(
-            modulate(self.norm2(x), shift_mlp, scale_mlp)
-        )
+        # FFN
+        x = x + self.ffn(self.norm3(x))
         
         return x
 
@@ -145,18 +197,21 @@ def modulate(x, shift, scale):
 
 class WanDiT(nn.Module):
     """
-    Wan Diffusion Transformer for video generation
-    Based on the MMDiT architecture with MoE (Mixture of Experts)
+    WAN 2.2 Diffusion Transformer
+    Architecture based on actual model inspection:
+    - hidden_size: 5120
+    - depth: 40 blocks (estimated from patterns)
+    - num_heads: 40 (5120 / 128 = 40)
+    - Has self_attn, cross_attn, and ffn in each block
     """
     def __init__(
         self,
         in_channels=16,
-        hidden_size=3072,
-        depth=28,
-        num_heads=24,
+        hidden_size=5120,  # From model inspection
+        context_dim=4096,  # T5-XXL dimension
+        depth=40,  # Estimated
+        num_heads=40,  # 5120 / 128
         patch_size=(1, 2, 2),  # Temporal, Height, Width
-        num_experts=8,
-        active_experts=2
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -171,9 +226,6 @@ class WanDiT(nn.Module):
             kernel_size=patch_size, stride=patch_size
         )
         
-        # Positional embedding - will be computed dynamically
-        self.max_seq_len = 100000  # Large enough for any reasonable sequence
-        
         # Time embedding
         self.time_embed = TimestepEmbedding(hidden_size)
         self.time_mlp = nn.Sequential(
@@ -182,9 +234,10 @@ class WanDiT(nn.Module):
             nn.Linear(hidden_size * 4, hidden_size)
         )
         
-        # Transformer blocks
+        # Transformer blocks with self-attention and cross-attention
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads) for _ in range(depth)
+            WanTransformerBlock(hidden_size, context_dim, num_heads) 
+            for _ in range(depth)
         ])
         
         # Final layer
@@ -192,9 +245,6 @@ class WanDiT(nn.Module):
             nn.LayerNorm(hidden_size, elementwise_affine=False),
             nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels)
         )
-        
-        # Conditioning projections - dynamic input size
-        self.context_embedder = None  # Will be created dynamically
         
         self.initialize_weights()
         
@@ -256,31 +306,18 @@ class WanDiT(nn.Module):
         pos_embed = self._get_pos_embed(seq_len, x.device, dtype=x.dtype)
         x = x + pos_embed
         
-        # Time conditioning
+        # Time conditioning (not used in WAN 2.2, but keep for compatibility)
         t_emb = self.time_embed(timesteps)
-        # Convert to model dtype before passing through MLP
         model_dtype = next(self.parameters()).dtype
         t_emb = t_emb.to(dtype=model_dtype)
         t_emb = self.time_mlp(t_emb)
         
-        # Project context - create embedder if needed
-        if self.context_embedder is None:
-            context_dim = context.shape[-1]
-            # Get model dtype from existing parameters
-            model_dtype = next(self.parameters()).dtype
-            self.context_embedder = nn.Linear(context_dim, self.hidden_size).to(
-                device=context.device, 
-                dtype=model_dtype
-            )
-        
         # Ensure context is in correct dtype
-        context = context.to(dtype=next(self.parameters()).dtype)
-        c = self.context_embedder(context.mean(dim=1))  # Pool sequence
-        c = c + t_emb
+        context = context.to(dtype=model_dtype)
         
-        # Apply transformer blocks
+        # Apply transformer blocks with cross-attention
         for block in self.blocks:
-            x = block(x, c)
+            x = block(x, context)  # Pass full context, not pooled
         
         # Final layer
         x = self.final_layer(x)
@@ -515,12 +552,13 @@ class UNETLoader:
         sample_tensor = next(iter(state_dict.values()))
         model_dtype = sample_tensor.dtype
         
-        # Create model
+        # Create model with correct dimensions from inspection
         model = WanDiT(
             in_channels=16,
-            hidden_size=3072,
-            depth=28,
-            num_heads=24
+            hidden_size=5120,  # From model inspection
+            context_dim=4096,  # T5-XXL
+            depth=40,  # Estimated from block count
+            num_heads=40  # 5120 / 128
         )
         
         # Convert model to same dtype as weights before loading
