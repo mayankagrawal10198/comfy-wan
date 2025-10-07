@@ -888,7 +888,7 @@ class LoraLoaderModelOnly:
             self._apply_lora()
         
     def _apply_lora(self):
-        """Apply LoRA weights to model"""
+        """Apply LoRA weights to model - ComfyUI LoHA format"""
         print(f"   Checking {len(self.lora_state_dict)} LoRA keys...")
         
         # Debug: print some LoRA keys to understand the structure
@@ -897,53 +897,63 @@ class LoraLoaderModelOnly:
         
         applied_count = 0
         
-        # Try to match LoRA keys with model parameters
-        for lora_key in self.lora_state_dict.keys():
-            # LoRA keys might have different formats:
-            # 1. "layer.lora_up.weight" and "layer.lora_down.weight"
-            # 2. "lora.layer.up" and "lora.layer.down"
-            # 3. Direct weight keys that should be added to base model
-            
-            if 'lora' in lora_key.lower():
-                # This is a LoRA-specific key
-                # Try to find the corresponding base weight and apply LoRA
-                base_key = lora_key.replace('.lora_up.weight', '').replace('.lora_down.weight', '')
-                base_key = base_key.replace('.lora_A.weight', '').replace('.lora_B.weight', '')
+        # ComfyUI LoHA format: layer.alpha, layer.diff
+        # Group keys by base layer name
+        lora_layers = {}
+        for key in self.lora_state_dict.keys():
+            if key.endswith('.alpha'):
+                base_key = key[:-6]  # Remove '.alpha'
+                if base_key not in lora_layers:
+                    lora_layers[base_key] = {}
+                lora_layers[base_key]['alpha'] = self.lora_state_dict[key]
+            elif key.endswith('.diff'):
+                base_key = key[:-5]  # Remove '.diff'
+                if base_key not in lora_layers:
+                    lora_layers[base_key] = {}
+                lora_layers[base_key]['diff'] = self.lora_state_dict[key]
+        
+        # Apply LoRA to matching model parameters
+        for base_key, lora_weights in lora_layers.items():
+            if 'alpha' in lora_weights and 'diff' in lora_weights:
+                alpha = lora_weights['alpha']
+                diff = lora_weights['diff']
                 
-                # Look for pairs
-                if 'lora_up' in lora_key or 'lora_B' in lora_key:
-                    down_key = lora_key.replace('lora_up', 'lora_down').replace('lora_B', 'lora_A')
-                    if down_key in self.lora_state_dict:
-                        lora_up = self.lora_state_dict[lora_key]
-                        lora_down = self.lora_state_dict[down_key]
-                        
-                        # Find corresponding model parameter
-                        for name, param in self.model.named_parameters():
-                            if base_key in name or name in base_key:
-                                try:
-                                    # Compute LoRA update: W' = W + alpha * (B @ A)
-                                    if len(lora_up.shape) == 2 and len(lora_down.shape) == 2:
-                                        lora_weight = (lora_up @ lora_down) * self.strength
-                                        if lora_weight.shape == param.shape:
-                                            param.data += lora_weight.to(param.dtype)
-                                            applied_count += 1
-                                            break
-                                except Exception as e:
-                                    continue
-            else:
-                # Direct weight - try to add to base model
+                # Find corresponding model parameter
+                # Convert diffusion_model.blocks.X.layer -> blocks.X.layer
+                model_key = base_key.replace('diffusion_model.', '')
+                
                 for name, param in self.model.named_parameters():
-                    if name == lora_key:
+                    # Try to match the key
+                    if model_key in name or name.endswith(model_key):
                         try:
-                            weight_diff = self.lora_state_dict[lora_key]
-                            if weight_diff.shape == param.shape:
-                                param.data += (weight_diff * self.strength).to(param.dtype)
+                            # Apply LoRA: W' = W + alpha * diff * strength
+                            if isinstance(alpha, torch.Tensor):
+                                alpha_val = alpha.item() if alpha.numel() == 1 else alpha
+                            else:
+                                alpha_val = alpha
+                            
+                            lora_update = diff * alpha_val * self.strength
+                            
+                            if lora_update.shape == param.shape:
+                                param.data = param.data.to(lora_update.dtype) + lora_update.to(param.device)
                                 applied_count += 1
                                 break
                         except Exception as e:
-                            continue
+                            # Try without alpha scaling
+                            try:
+                                if diff.shape == param.shape:
+                                    param.data = param.data.to(diff.dtype) + (diff * self.strength).to(param.device)
+                                    applied_count += 1
+                                    break
+                            except:
+                                continue
         
-        print(f"   LoRA applied to {applied_count} layers (strength: {self.strength})")
+        if applied_count == 0:
+            print(f"   WARNING: LoRA not applied! Key mismatch between LoRA and model.")
+            print(f"   LoRA expects: {list(lora_layers.keys())[:3]}")
+            print(f"   Model has: {[n for n, _ in list(self.model.named_parameters())[:3]]}")
+        else:
+            print(f"   ✓ LoRA applied to {applied_count} layers (strength: {self.strength})")
 
 
 # ==================== MAIN PIPELINE ====================
