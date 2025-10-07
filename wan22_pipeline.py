@@ -543,6 +543,26 @@ class WanVAE(nn.Module):
         print(f"      Input latent shape: {z.shape}")
         print(f"      Input latent range: [{z.min():.3f}, {z.max():.3f}]")
         
+        # Check if we're in bypass mode
+        if hasattr(self, '_bypass_mode') and self._bypass_mode:
+            print("      WARNING: VAE is in bypass mode - using simplified decoding")
+            # Use simplified bypass mode
+            base_image = z[:, :3, :, :, :] / self.scaling_factor
+            base_image = torch.clamp(base_image, -2.0, 2.0)
+            
+            # Spatial upsampling (8x) - keep temporal dimension unchanged
+            rgb_up = F.interpolate(
+                base_image.flatten(0, 1),  # [B*T, 3, H, W]
+                scale_factor=8.0,
+                mode='bilinear',
+                align_corners=False
+            )
+            rgb_up = rgb_up.view(B, 3, T, H*8, W*8)  # T stays the same
+            result = torch.tanh(rgb_up)
+            print(f"      Bypass result shape: {result.shape}")
+            print(f"      Bypass result range: [{result.min():.3f}, {result.max():.3f}]")
+            return result
+        
         # Convert to correct dtype
         vae_dtype = self.decoder['conv1'].weight.data.dtype
         z = z.to(dtype=vae_dtype)
@@ -681,6 +701,14 @@ class VAELoader:
         
         # Try to load weights, but use bypass mode if architecture doesn't match
         missing, unexpected = vae.load_state_dict(state_dict, strict=False)
+        
+        # Debug: Print detailed mismatch information
+        print(f"Missing keys: {len(missing)}")
+        print(f"Unexpected keys: {len(unexpected)}")
+        if len(missing) > 0:
+            print(f"First 5 missing keys: {list(missing)[:5]}")
+        if len(unexpected) > 0:
+            print(f"First 5 unexpected keys: {list(unexpected)[:5]}")
         
         # Check if VAE architecture matches
         if len(unexpected) > 50 or len(missing) > 50:
