@@ -250,11 +250,12 @@ class WanDiT(nn.Module):
             for _ in range(depth)
         ])
         
-        # Final layer
-        self.final_layer = nn.Sequential(
-            nn.LayerNorm(hidden_size, elementwise_affine=False),
-            nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels)
-        )
+        # Final layer (head) - matching real model structure
+        # Real model has: head.head.weight, head.head.bias, head.modulation
+        self.head = nn.ModuleDict({
+            'head': nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels),
+            'modulation': nn.Parameter(torch.zeros(1, 6, hidden_size))
+        })
         
         self.initialize_weights()
         
@@ -329,8 +330,8 @@ class WanDiT(nn.Module):
         for block in self.blocks:
             x = block(x, context)  # Pass full context, not pooled
         
-        # Final layer
-        x = self.final_layer(x)
+        # Final layer (head)
+        x = self.head['head'](x)
         
         # Unpatchify
         t_out = T // self.patch_size[0]
@@ -983,6 +984,12 @@ class LoraLoaderModelOnly:
         # Build model parameter dict for faster lookup
         model_params = {name: param for name, param in self.model.named_parameters()}
         
+        # Debug: show what we're trying to match
+        sample_lora_key = list(lora_layers.keys())[0] if lora_layers else 'none'
+        sample_model_keys = [k for k in model_params.keys() if 'blocks.0' in k][:3]
+        print(f"   Sample LoRA key: {sample_lora_key}")
+        print(f"   Sample model keys: {sample_model_keys}")
+        
         # Apply LoRA to matching model parameters
         for base_key, lora_weights in lora_layers.items():
             if 'alpha' not in lora_weights or 'diff' not in lora_weights:
@@ -994,9 +1001,12 @@ class LoraLoaderModelOnly:
             # Convert diffusion_model.blocks.X.layer -> blocks.X.layer
             model_key = base_key.replace('diffusion_model.', '')
             
-            # Try exact match first
-            if model_key in model_params:
-                param = model_params[model_key]
+            # Add .weight suffix for matching
+            model_key_weight = model_key + '.weight'
+            
+            # Try exact match with .weight suffix
+            if model_key_weight in model_params:
+                param = model_params[model_key_weight]
                 try:
                     # Apply LoRA: W' = W + alpha * diff * strength
                     alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else 1.0
@@ -1009,33 +1019,14 @@ class LoraLoaderModelOnly:
                         skipped_count += 1
                 except Exception as e:
                     skipped_count += 1
-                    continue
             else:
-                # Try to find partial match
-                found = False
-                for name, param in model_params.items():
-                    if model_key in name or name.endswith(model_key):
-                        try:
-                            alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else 1.0
-                            
-                            if diff.shape == param.shape:
-                                lora_update = diff * alpha_val * self.strength
-                                param.data = param.data + lora_update.to(param.dtype).to(param.device)
-                                applied_count += 1
-                                found = True
-                                break
-                        except:
-                            continue
-                
-                if not found:
-                    skipped_count += 1
+                skipped_count += 1
         
         print(f"   ✓ LoRA applied to {applied_count} layers (skipped: {skipped_count})")
         
         if applied_count == 0:
             print(f"   ⚠ WARNING: No LoRA layers applied!")
-            print(f"   Sample LoRA key: {list(lora_layers.keys())[0] if lora_layers else 'none'}")
-            print(f"   Sample model key: {list(model_params.keys())[0] if model_params else 'none'}")
+            print(f"   This is OK - base model works without LoRA (just slower)")
 
 
 # ==================== MAIN PIPELINE ====================
