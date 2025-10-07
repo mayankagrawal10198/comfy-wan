@@ -529,6 +529,18 @@ class WanVAE(nn.Module):
         h = self.conv2(h)
         print(f"      After conv2: {h.shape}")
         
+        # Ensure we have 16 channels for the latent space
+        if h.shape[1] != 16:
+            print(f"      WARNING: VAE output has {h.shape[1]} channels, expected 16. Padding with zeros...")
+            # Pad to 16 channels
+            if h.shape[1] < 16:
+                padding = torch.zeros(h.shape[0], 16 - h.shape[1], h.shape[2], h.shape[3], h.shape[4], 
+                                   device=h.device, dtype=h.dtype)
+                h = torch.cat([h, padding], dim=1)
+            else:
+                # If more than 16 channels, take first 16
+                h = h[:, :16, :, :, :]
+        
         # Split into mean and logvar for KL divergence
         mean, logvar = torch.chunk(h, 2, dim=1)
         
