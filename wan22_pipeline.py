@@ -424,34 +424,44 @@ class UpsampleBlock3D(nn.Module):
 
 class WanVAE(nn.Module):
     """
-    WAN 2.2 VAE - Exact architecture matching actual model
-    Based on the actual .safetensors model structure
+    WAN 2.2 VAE - Simplified architecture that can load weights
     """
     def __init__(self, in_channels=3, latent_channels=16):
         super().__init__()
         self.latent_channels = latent_channels
         self.scaling_factor = 0.13025
         
-        # Encoder layers (exact match from model)
-        self.conv1 = nn.Conv3d(32, 32, kernel_size=1, stride=1, padding=0)
-        self.conv2 = nn.Conv3d(16, 16, kernel_size=1, stride=1, padding=0)
-        
-        # Encoder downsamples (exact match - 96 channels for conv1)
+        # Simple encoder that matches the model structure
         self.encoder = nn.ModuleDict({
-            'conv1': nn.Conv3d(3, 96, kernel_size=3, stride=2, padding=1),  # 96 channels, not 32
+            'conv1': nn.Conv3d(3, 96, kernel_size=3, stride=2, padding=1),
             'downsamples': nn.ModuleList([
                 nn.Conv3d(96, 64, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),
+            ]),
+            'head': nn.ModuleDict({
+                '0': nn.GroupNorm(32, 96),
+                '2': nn.Conv3d(96, 3, kernel_size=3, stride=1, padding=1)
+            }),
+            'middle': nn.ModuleList([
+                nn.ModuleDict({
+                    'residual': nn.ModuleList([
+                        nn.GroupNorm(32, 96),
+                        nn.SiLU(),
+                        nn.Conv3d(96, 96, kernel_size=3, stride=1, padding=1),
+                        nn.GroupNorm(32, 96),
+                        nn.SiLU(),
+                        nn.Conv3d(96, 96, kernel_size=3, stride=1, padding=1),
+                    ])
+                })
             ])
         })
         
-        # Decoder layers (exact match)
+        # Simple decoder that matches the model structure
         self.decoder = nn.ModuleDict({
             'conv1': nn.Conv3d(16, 384, kernel_size=3, stride=1, padding=1),
             'middle': nn.ModuleList([
-                # Residual block 0
                 nn.ModuleDict({
                     'residual': nn.ModuleList([
                         nn.GroupNorm(32, 384),
@@ -462,13 +472,11 @@ class WanVAE(nn.Module):
                         nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
                     ])
                 }),
-                # Attention block 1 (2D convolutions)
                 nn.ModuleDict({
                     'norm': nn.GroupNorm(32, 384),
                     'proj': nn.Conv2d(384, 384, kernel_size=1, stride=1, padding=0),
                     'to_qkv': nn.Conv2d(384, 1152, kernel_size=1, stride=1, padding=0),
                 }),
-                # Residual block 2
                 nn.ModuleDict({
                     'residual': nn.ModuleList([
                         nn.GroupNorm(32, 384),
@@ -481,7 +489,6 @@ class WanVAE(nn.Module):
                 }),
             ]),
             'upsamples': nn.ModuleList([
-                # 15 upsample layers (0-14)
                 nn.ModuleDict({
                     'norm': nn.GroupNorm(32, 384),
                     'conv': nn.ConvTranspose3d(384, 384, kernel_size=3, stride=2, padding=1, output_padding=1),
@@ -494,6 +501,10 @@ class WanVAE(nn.Module):
                 '2': nn.Conv3d(96, 3, kernel_size=3, stride=1, padding=1)
             })
         })
+        
+        # Additional layers that the model expects
+        self.conv1 = nn.Conv3d(32, 32, kernel_size=1, stride=1, padding=0)
+        self.conv2 = nn.Conv3d(16, 16, kernel_size=1, stride=1, padding=0)
         
         # KL divergence head
         self.kl_head = nn.Sequential(
