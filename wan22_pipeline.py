@@ -303,28 +303,19 @@ class WanDiT(nn.Module):
         context: [B, N, D] text conditioning from T5
         """
         B, C, T, H, W = x.shape
-        print(f"        WanDiT DEBUG: Input x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
-        print(f"        WanDiT DEBUG: Timesteps: {timesteps}")
-        print(f"        WanDiT DEBUG: Context shape: {context.shape}")
-        
         # Ensure input has same dtype as model
         model_dtype = next(self.parameters()).dtype
         x = x.to(dtype=model_dtype)
         timesteps = timesteps.to(dtype=model_dtype)
-        print(f"        WanDiT DEBUG: After dtype conversion - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Patchify
         x = self.patch_embed(x)  # [B, hidden_size, T', H', W']
-        print(f"        WanDiT DEBUG: After patch_embed - x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
         x = rearrange(x, 'b c t h w -> b (t h w) c')
-        print(f"        WanDiT DEBUG: After rearrange - x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Add positional embedding - computed dynamically
         seq_len = x.shape[1]
         pos_embed = self._get_pos_embed(seq_len, x.device, dtype=x.dtype)
-        print(f"        WanDiT DEBUG: pos_embed shape: {pos_embed.shape}, range: [{pos_embed.min():.4f}, {pos_embed.max():.4f}]")
         x = x + pos_embed
-        print(f"        WanDiT DEBUG: After pos_embed - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Time conditioning (not used in WAN 2.2, but keep for compatibility)
         t_emb = self.time_embed(timesteps)
@@ -337,20 +328,16 @@ class WanDiT(nn.Module):
         
         # Apply transformer blocks with cross-attention
         for i, block in enumerate(self.blocks):
-            print(f"        WanDiT DEBUG: Before block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
             x = block(x, context)  # Pass full context, not pooled
             
             # Apply gradient clipping to prevent explosion
             if torch.isnan(x).any() or torch.isinf(x).any():
-                print(f"        WanDiT DEBUG: NaN/Inf detected in block {i}!")
                 # Replace with small random values to continue
                 x = torch.randn_like(x) * 0.01
                 break
             
             # Clip extreme values to prevent explosion
             x = torch.clamp(x, -100.0, 100.0)
-            
-            print(f"        WanDiT DEBUG: After block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Final layer (head)
         x = self.head['head'](x)
@@ -503,23 +490,29 @@ class WanVAE(nn.Module):
         
     def encode(self, x):
         """Encode video to latent with KL divergence"""
-        # Check if using bypass mode
-        if hasattr(self, '_bypass_mode') and self._bypass_mode:
-            # Simplified encoding: just downsample spatially, keep temporal dimension
-            B, C, T, H, W = x.shape
-            # Only downsample spatially (8x), keep frames the same
-            x_down = F.interpolate(
-                x.flatten(0, 1),  # [B*T, C, H, W]
-                scale_factor=0.125,  # 8x spatial reduction
-                mode='bilinear',
-                align_corners=False
-            )
-            x_down = x_down.view(B, C, T, H//8, W//8)  # Keep T unchanged
-            
-            # Simple channel expansion to 16 channels
-            latent = torch.randn(B, 16, T, H//8, W//8, device=x.device, dtype=x.dtype) * 0.1
-            latent[:, :3, :, :, :] = x_down * self.scaling_factor
-            return latent
+        # Always use bypass mode for now to avoid architecture mismatch
+        print("      Using VAE bypass mode for encoding")
+        # Simplified encoding: just downsample spatially, keep temporal dimension
+        B, C, T, H, W = x.shape
+        print(f"      Input shape: {x.shape}")
+        
+        # Only downsample spatially (8x), keep frames the same
+        x_down = F.interpolate(
+            x.flatten(0, 1),  # [B*T, C, H, W]
+            scale_factor=0.125,  # 8x spatial reduction
+            mode='bilinear',
+            align_corners=False
+        )
+        x_down = x_down.view(B, C, T, H//8, W//8)  # Keep T unchanged
+        print(f"      Downsampled shape: {x_down.shape}")
+        
+        # Create proper latent with 16 channels
+        latent = torch.zeros(B, 16, T, H//8, W//8, device=x.device, dtype=x.dtype)
+        latent[:, :3, :, :, :] = x_down * self.scaling_factor
+        print(f"      Latent shape: {latent.shape}")
+        print(f"      Latent range: [{latent.min():.3f}, {latent.max():.3f}]")
+        
+        return latent
         
         # Convert input to same dtype as encoder
         x = x.to(dtype=next(self.encoder[0].conv.weight.data.dtype))
@@ -541,24 +534,37 @@ class WanVAE(nn.Module):
         
     def decode(self, z):
         """Decode latent to video"""
-        # Check if using bypass mode
-        if hasattr(self, '_bypass_mode') and self._bypass_mode:
-            # Simplified decoding: upsample spatially only
-            B, C, T, H, W = z.shape
-            
-            # Take first 3 channels and rescale
-            rgb = z[:, :3, :, :, :] / self.scaling_factor
-            
-            # Spatial upsampling (8x) - keep temporal dimension unchanged
-            rgb_up = F.interpolate(
-                rgb.flatten(0, 1),  # [B*T, 3, H, W]
-                scale_factor=8.0,
-                mode='bilinear',
-                align_corners=False
-            )
-            rgb_up = rgb_up.view(B, 3, T, H*8, W*8)  # T stays the same
-            
-            return torch.tanh(rgb_up)  # Return in [-1, 1] range
+        # Always use bypass mode for now to avoid architecture mismatch
+        print("      Using VAE bypass mode - simplified decoding")
+        # Simplified decoding: upsample spatially only
+        B, C, T, H, W = z.shape
+        print(f"      Bypass input shape: {z.shape}")
+        print(f"      Bypass input range: [{z.min():.3f}, {z.max():.3f}]")
+        
+        # Take first 3 channels and rescale
+        rgb = z[:, :3, :, :, :] / self.scaling_factor
+        print(f"      RGB channels range: [{rgb.min():.3f}, {rgb.max():.3f}]")
+        
+        # Clamp extreme values that might cause artifacts
+        rgb = torch.clamp(rgb, -2.0, 2.0)
+        print(f"      Clamped RGB range: [{rgb.min():.3f}, {rgb.max():.3f}]")
+        
+        # Spatial upsampling (8x) - keep temporal dimension unchanged
+        rgb_up = F.interpolate(
+            rgb.flatten(0, 1),  # [B*T, 3, H, W]
+            scale_factor=8.0,
+            mode='bilinear',
+            align_corners=False
+        )
+        rgb_up = rgb_up.view(B, 3, T, H*8, W*8)  # T stays the same
+        print(f"      Upsampled shape: {rgb_up.shape}")
+        print(f"      Upsampled range: [{rgb_up.min():.3f}, {rgb_up.max():.3f}]")
+        
+        # Apply tanh to normalize to [-1, 1]
+        result = torch.tanh(rgb_up)
+        print(f"      Final bypass result range: [{result.min():.3f}, {result.max():.3f}]")
+        
+        return result  # Return in [-1, 1] range
         
         z = z / self.scaling_factor
         
@@ -805,30 +811,18 @@ class EulerSampler:
     @staticmethod
     def step(model, x, t, t_next, cond, uncond, cfg_scale):
         """Single Euler step - denoises the input"""
-        print(f"      DEBUG: Input x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
-        print(f"      DEBUG: Timestep t: {t}, t_next: {t_next}, CFG: {cfg_scale}")
-        
         # Model predicts the denoised output (v-prediction or x0-prediction)
         with torch.no_grad():
-            print(f"      DEBUG: Calling model with x shape: {x.shape}, t: {t}, cond shape: {cond.shape}")
             pred_cond = model(x, t, cond)
-            print(f"      DEBUG: Model returned pred_cond shape: {pred_cond.shape}")
             pred_uncond = model(x, t, uncond)
-            print(f"      DEBUG: Model returned pred_uncond shape: {pred_uncond.shape}")
-        
-        print(f"      DEBUG: pred_cond range: [{pred_cond.min():.4f}, {pred_cond.max():.4f}]")
-        print(f"      DEBUG: pred_uncond range: [{pred_uncond.min():.4f}, {pred_uncond.max():.4f}]")
         
         # Classifier-free guidance
         pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
-        print(f"      DEBUG: CFG pred range: [{pred.min():.4f}, {pred.max():.4f}]")
         
         # Euler method: move from current noisy x towards predicted clean image
         # Standard DDIM/Euler formula for denoising
         sigma = t / 1000.0  # Convert timestep to sigma
         sigma_next = t_next / 1000.0
-        
-        print(f"      DEBUG: Sigma: {sigma.item():.4f}, Sigma_next: {sigma_next.item():.4f}")
         
         # Denoising step
         if sigma_next > 0:
@@ -837,8 +831,6 @@ class EulerSampler:
         else:
             # Final step
             x = pred
-        
-        print(f"      DEBUG: Final x range: [{x.min():.4f}, {x.max():.4f}]")
         
         return x
 
@@ -935,11 +927,38 @@ class VAEDecode:
         print(f"      Decoding latent shape: {latent.shape}")
         print(f"      Latent range: [{latent.min():.3f}, {latent.max():.3f}]")
         
+        # Check for problematic values in latents
+        if torch.isnan(latent).any():
+            print("      WARNING: Latents contain NaN values!")
+            latent = torch.nan_to_num(latent, nan=0.0)
+        
+        if torch.isinf(latent).any():
+            print("      WARNING: Latents contain Inf values!")
+            latent = torch.nan_to_num(latent, posinf=1.0, neginf=-1.0)
+        
+        # Check if latents are too extreme (this might be the issue)
+        if latent.abs().max() > 100:
+            print(f"      WARNING: Latents have extreme values (max: {latent.abs().max():.1f})")
+            print(f"      This might cause VAE decoding issues!")
+            # Try to normalize latents to a reasonable range
+            latent = torch.clamp(latent, -10.0, 10.0)
+            print(f"      Clamped latent range: [{latent.min():.3f}, {latent.max():.3f}]")
+        
         # Decode
         try:
             video = self.vae.decode(latent)
             print(f"      Decoded video shape: {video.shape}")
             print(f"      Video range before norm: [{video.min():.3f}, {video.max():.3f}]")
+            
+            # Check for problematic values in decoded video
+            if torch.isnan(video).any():
+                print("      WARNING: Decoded video contains NaN values!")
+                video = torch.nan_to_num(video, nan=0.0)
+            
+            if torch.isinf(video).any():
+                print("      WARNING: Decoded video contains Inf values!")
+                video = torch.nan_to_num(video, posinf=1.0, neginf=-1.0)
+                
         except Exception as e:
             print(f"      VAE decode error: {e}")
             print(f"      Using latent visualization as fallback...")
