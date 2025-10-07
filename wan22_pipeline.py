@@ -1018,8 +1018,10 @@ class LoraLoaderModelOnly:
                     # For alpha-only LoRA format, scale the existing weights
                     alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else float(alpha)
                     
-                    # Apply alpha scaling: W_new = W_original * alpha * strength
-                    param.data = param.data * alpha_val * self.strength
+                    # Apply alpha scaling: W_new = W_original * (1 + alpha * strength)
+                    # Use additive scaling instead of multiplicative to avoid numerical instability
+                    scaling_factor = 1.0 + (alpha_val * self.strength * 0.1)  # Reduce impact
+                    param.data = param.data * scaling_factor
                     applied_count += 1
                     
                     if applied_count <= 3:  # Show first few applications
