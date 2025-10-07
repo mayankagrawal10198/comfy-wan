@@ -93,19 +93,29 @@ class CrossAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
+        self.dim = dim
+        self.context_dim = context_dim
         
         # Q from input, K and V from context
+        # NOTE: In WAN 2.2, K and V take dim->dim (5120->5120), not context_dim->dim
+        # This means context is pre-projected to the same dimension
         self.q = nn.Linear(dim, dim, bias=True)
-        self.k = nn.Linear(context_dim, dim, bias=True)
-        self.v = nn.Linear(context_dim, dim, bias=True)
+        self.k = nn.Linear(dim, dim, bias=True)  # Changed from context_dim to dim
+        self.v = nn.Linear(dim, dim, bias=True)  # Changed from context_dim to dim
         self.o = nn.Linear(dim, dim, bias=True)
         
         # RMSNorm
         self.norm_q = nn.LayerNorm(dim)
         self.norm_k = nn.LayerNorm(dim)
         
+        # Context projection (project context from context_dim to dim)
+        self.context_proj = nn.Linear(context_dim, dim, bias=True) if context_dim != dim else nn.Identity()
+        
     def forward(self, x, context):
         B, N, C = x.shape
+        
+        # Project context to same dimension as model
+        context = self.context_proj(context)
         
         q = self.norm_q(self.q(x))
         k = self.norm_k(self.k(context))
@@ -937,11 +947,8 @@ class LoraLoaderModelOnly:
         """Apply LoRA weights to model - ComfyUI LoHA format"""
         print(f"   Checking {len(self.lora_state_dict)} LoRA keys...")
         
-        # Debug: print some LoRA keys to understand the structure
-        lora_keys = list(self.lora_state_dict.keys())[:5]
-        print(f"   Sample LoRA keys: {lora_keys}")
-        
         applied_count = 0
+        skipped_count = 0
         
         # ComfyUI LoHA format: layer.alpha, layer.diff
         # Group keys by base layer name
@@ -958,48 +965,64 @@ class LoraLoaderModelOnly:
                     lora_layers[base_key] = {}
                 lora_layers[base_key]['diff'] = self.lora_state_dict[key]
         
+        print(f"   Found {len(lora_layers)} LoRA layers to apply")
+        
+        # Build model parameter dict for faster lookup
+        model_params = {name: param for name, param in self.model.named_parameters()}
+        
         # Apply LoRA to matching model parameters
         for base_key, lora_weights in lora_layers.items():
-            if 'alpha' in lora_weights and 'diff' in lora_weights:
-                alpha = lora_weights['alpha']
-                diff = lora_weights['diff']
+            if 'alpha' not in lora_weights or 'diff' not in lora_weights:
+                continue
                 
-                # Find corresponding model parameter
-                # Convert diffusion_model.blocks.X.layer -> blocks.X.layer
-                model_key = base_key.replace('diffusion_model.', '')
-                
-                for name, param in self.model.named_parameters():
-                    # Try to match the key
+            alpha = lora_weights['alpha']
+            diff = lora_weights['diff']
+            
+            # Convert diffusion_model.blocks.X.layer -> blocks.X.layer
+            model_key = base_key.replace('diffusion_model.', '')
+            
+            # Try exact match first
+            if model_key in model_params:
+                param = model_params[model_key]
+                try:
+                    # Apply LoRA: W' = W + alpha * diff * strength
+                    alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else 1.0
+                    
+                    if diff.shape == param.shape:
+                        lora_update = diff * alpha_val * self.strength
+                        param.data = param.data + lora_update.to(param.dtype).to(param.device)
+                        applied_count += 1
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    skipped_count += 1
+                    continue
+            else:
+                # Try to find partial match
+                found = False
+                for name, param in model_params.items():
                     if model_key in name or name.endswith(model_key):
                         try:
-                            # Apply LoRA: W' = W + alpha * diff * strength
-                            if isinstance(alpha, torch.Tensor):
-                                alpha_val = alpha.item() if alpha.numel() == 1 else alpha
-                            else:
-                                alpha_val = alpha
+                            alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else 1.0
                             
-                            lora_update = diff * alpha_val * self.strength
-                            
-                            if lora_update.shape == param.shape:
-                                param.data = param.data.to(lora_update.dtype) + lora_update.to(param.device)
+                            if diff.shape == param.shape:
+                                lora_update = diff * alpha_val * self.strength
+                                param.data = param.data + lora_update.to(param.dtype).to(param.device)
                                 applied_count += 1
+                                found = True
                                 break
-                        except Exception as e:
-                            # Try without alpha scaling
-                            try:
-                                if diff.shape == param.shape:
-                                    param.data = param.data.to(diff.dtype) + (diff * self.strength).to(param.device)
-                                    applied_count += 1
-                                    break
-                            except:
-                                continue
+                        except:
+                            continue
+                
+                if not found:
+                    skipped_count += 1
+        
+        print(f"   ✓ LoRA applied to {applied_count} layers (skipped: {skipped_count})")
         
         if applied_count == 0:
-            print(f"   WARNING: LoRA not applied! Key mismatch between LoRA and model.")
-            print(f"   LoRA expects: {list(lora_layers.keys())[:3]}")
-            print(f"   Model has: {[n for n, _ in list(self.model.named_parameters())[:3]]}")
-        else:
-            print(f"   ✓ LoRA applied to {applied_count} layers (strength: {self.strength})")
+            print(f"   ⚠ WARNING: No LoRA layers applied!")
+            print(f"   Sample LoRA key: {list(lora_layers.keys())[0] if lora_layers else 'none'}")
+            print(f"   Sample model key: {list(model_params.keys())[0] if model_params else 'none'}")
 
 
 # ==================== MAIN PIPELINE ====================
