@@ -997,12 +997,13 @@ class LoraLoaderModelOnly:
         
         # Apply LoRA to matching model parameters
         for base_key, lora_weights in lora_layers.items():
-            if 'alpha' not in lora_weights or 'diff' not in lora_weights:
-                print(f"      Skipping {base_key}: missing alpha or diff")
+            if 'alpha' not in lora_weights:
+                print(f"      Skipping {base_key}: missing alpha")
                 continue
                 
             alpha = lora_weights['alpha']
-            diff = lora_weights['diff']
+            # For this LoRA format, we only have alpha (scaling factor)
+            # No diff tensor to apply
             
             # Convert diffusion_model.blocks.X.layer -> blocks.X.layer
             model_key = base_key.replace('diffusion_model.', '')
@@ -1014,21 +1015,23 @@ class LoraLoaderModelOnly:
             if model_key_weight in model_params:
                 param = model_params[model_key_weight]
                 try:
-                    # Apply LoRA: W' = W + alpha * diff * strength
-                    alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else 1.0
+                    # For alpha-only LoRA format, scale the existing weights
+                    alpha_val = alpha.item() if isinstance(alpha, torch.Tensor) and alpha.numel() == 1 else float(alpha)
                     
-                    if diff.shape == param.shape:
-                        lora_update = diff * alpha_val * self.strength
-                        param.data = param.data + lora_update.to(param.dtype).to(param.device)
-                        applied_count += 1
-                    else:
-                        print(f"      Shape mismatch for {model_key_weight}: LoRA {diff.shape} vs Model {param.shape}")
-                        skipped_count += 1
+                    # Apply alpha scaling: W_new = W_original * alpha * strength
+                    param.data = param.data * alpha_val * self.strength
+                    applied_count += 1
+                    
+                    if applied_count <= 3:  # Show first few applications
+                        print(f"      ✓ Applied LoRA scaling to {model_key_weight} (alpha={alpha_val})")
+                        
                 except Exception as e:
                     print(f"      Error applying LoRA to {model_key_weight}: {e}")
                     skipped_count += 1
             else:
                 skipped_count += 1
+                if skipped_count <= 3:  # Show first few skips
+                    print(f"      Model key not found: {model_key_weight}")
         
         print(f"   ✓ LoRA applied to {applied_count} layers (skipped: {skipped_count})")
         
