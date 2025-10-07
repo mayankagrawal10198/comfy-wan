@@ -789,8 +789,11 @@ class EulerSampler:
         
         # Model predicts the denoised output (v-prediction or x0-prediction)
         with torch.no_grad():
+            print(f"      DEBUG: Calling model with x shape: {x.shape}, t: {t}, cond shape: {cond.shape}")
             pred_cond = model(x, t, cond)
+            print(f"      DEBUG: Model returned pred_cond shape: {pred_cond.shape}")
             pred_uncond = model(x, t, uncond)
+            print(f"      DEBUG: Model returned pred_uncond shape: {pred_uncond.shape}")
         
         print(f"      DEBUG: pred_cond range: [{pred_cond.min():.4f}, {pred_cond.max():.4f}]")
         print(f"      DEBUG: pred_uncond range: [{pred_uncond.min():.4f}, {pred_uncond.max():.4f}]")
@@ -804,7 +807,7 @@ class EulerSampler:
         sigma = t / 1000.0  # Convert timestep to sigma
         sigma_next = t_next / 1000.0
         
-        print(f"      DEBUG: Sigma: {sigma:.4f}, Sigma_next: {sigma_next:.4f}")
+        print(f"      DEBUG: Sigma: {sigma.item():.4f}, Sigma_next: {sigma_next.item():.4f}")
         
         # Denoising step
         if sigma_next > 0:
