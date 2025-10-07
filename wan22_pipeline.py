@@ -336,8 +336,13 @@ class WanDiT(nn.Module):
         context = context.to(dtype=model_dtype)
         
         # Apply transformer blocks with cross-attention
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+            print(f"        WanDiT DEBUG: Before block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
             x = block(x, context)  # Pass full context, not pooled
+            print(f"        WanDiT DEBUG: After block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
+            if torch.isnan(x).any():
+                print(f"        WanDiT DEBUG: NaN detected in block {i}!")
+                break
         
         # Final layer (head)
         x = self.head['head'](x)
