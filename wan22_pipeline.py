@@ -477,7 +477,7 @@ class WanVAE(nn.Module):
             ),
         ])
         
-        # Decoder upsamples (15 layers based on model)
+        # Decoder upsamples (reduced to 4 layers for memory efficiency)
         self.decoder_upsamples = nn.ModuleList([
             # Each upsample block
             nn.Sequential(
@@ -487,7 +487,7 @@ class WanVAE(nn.Module):
                 nn.GroupNorm(32, 384),
                 nn.SiLU(),
                 nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-            ) for _ in range(15)
+            ) for _ in range(4)  # Reduced from 15 to 4
         ])
         
         # Decoder head
@@ -540,8 +540,8 @@ class WanVAE(nn.Module):
         return z * self.scaling_factor
         
     def decode(self, z):
-        """Decode latent to video"""
-        print("      Using real VAE decoder")
+        """Decode latent to video - frame by frame for memory efficiency"""
+        print("      Using real VAE decoder (frame-by-frame)")
         B, C, T, H, W = z.shape
         print(f"      Input latent shape: {z.shape}")
         print(f"      Input latent range: [{z.min():.3f}, {z.max():.3f}]")
@@ -555,33 +555,47 @@ class WanVAE(nn.Module):
         # Scale latent
         z = z / self.scaling_factor
         
-        # Apply decoder conv1
-        h = self.decoder_conv1(z)
-        print(f"      After decoder_conv1: {h.shape}")
-        
-        # Forward through decoder middle layers
-        for i, layer in enumerate(self.decoder_middle):
-            if i == 1:  # Attention layer
-                # Simple attention implementation
-                h = layer[0](h)  # GroupNorm + SiLU
-                h = layer[1](h)  # Conv1x1
-                # Skip QKV for now, just pass through
-                h = layer[2](h)  # QKV projection (simplified)
-            else:
+        # Process frame by frame to avoid memory issues
+        decoded_frames = []
+        for t in range(T):
+            print(f"      Processing frame {t+1}/{T}...")
+            # Extract single frame
+            z_frame = z[:, :, t:t+1, :, :]  # [B, C, 1, H, W]
+            
+            # Apply decoder conv1
+            h = self.decoder_conv1(z_frame)
+            
+            # Forward through decoder middle layers
+            for i, layer in enumerate(self.decoder_middle):
+                if i == 1:  # Attention layer
+                    # Simple attention implementation
+                    h = layer[0](h)  # GroupNorm + SiLU
+                    h = layer[1](h)  # Conv1x1
+                    # Skip QKV for now, just pass through
+                    h = layer[2](h)  # QKV projection (simplified)
+                else:
+                    h = layer(h)
+            
+            # Forward through decoder upsamples
+            for i, layer in enumerate(self.decoder_upsamples):
                 h = layer(h)
-            print(f"      Decoder middle {i}: {h.shape}")
+            
+            # Apply decoder head
+            h = self.decoder_head(h)
+            
+            # Store decoded frame
+            decoded_frames.append(h)
+            
+            # Clear intermediate tensors
+            del h
+            torch.cuda.empty_cache()
         
-        # Forward through decoder upsamples
-        for i, layer in enumerate(self.decoder_upsamples):
-            h = layer(h)
-            print(f"      Decoder upsample {i}: {h.shape}")
+        # Concatenate all frames
+        result = torch.cat(decoded_frames, dim=2)  # [B, C, T, H, W]
+        print(f"      Final video shape: {result.shape}")
+        print(f"      Final video range: [{result.min():.3f}, {result.max():.3f}]")
         
-        # Apply decoder head
-        h = self.decoder_head(h)
-        print(f"      After decoder_head: {h.shape}")
-        print(f"      Final video range: [{h.min():.3f}, {h.max():.3f}]")
-        
-        return torch.tanh(h)  # Return in [-1, 1] range
+        return torch.tanh(result)  # Return in [-1, 1] range
 
 
 # ==================== COMFYUI NODE IMPLEMENTATIONS ====================
@@ -1508,6 +1522,13 @@ class WAN22PipelineAdvanced(WAN22Pipeline):
         step_time = time.time() - step_start
         print(f"      ✓ Completed in {step_time:.2f}s")
         
+        # Offload high noise model to save memory
+        if hasattr(self, 'transformer_high') and self.transformer_high is not None:
+            print("      Offloading high noise model to CPU...")
+            self.transformer_high = self.transformer_high.cpu()
+            torch.cuda.empty_cache()
+            print("      ✓ High noise model offloaded")
+        
         # Low noise - 4 steps (2-4)
         print("\n[4/5] Running low noise sampling (2 steps)...")
         step_start = time.time()
@@ -1521,6 +1542,13 @@ class WAN22PipelineAdvanced(WAN22Pipeline):
         )
         step_time = time.time() - step_start
         print(f"      ✓ Completed in {step_time:.2f}s")
+        
+        # Offload low noise model to save memory
+        if hasattr(self, 'transformer_low') and self.transformer_low is not None:
+            print("      Offloading low noise model to CPU...")
+            self.transformer_low = self.transformer_low.cpu()
+            torch.cuda.empty_cache()
+            print("      ✓ Low noise model offloaded")
         
         # Decode
         print("\n[5/5] Decoding latents...")
