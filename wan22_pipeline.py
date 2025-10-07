@@ -644,8 +644,7 @@ class VAELoader:
         
         vae = WanVAE(
             in_channels=3,
-            latent_channels=16,
-            base_channels=128
+            latent_channels=16
         )
         
         # Convert VAE to same dtype as weights
