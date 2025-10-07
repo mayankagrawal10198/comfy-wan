@@ -436,11 +436,11 @@ class WanVAE(nn.Module):
         self.conv1 = nn.Conv3d(32, 32, kernel_size=1, stride=1, padding=0)
         self.conv2 = nn.Conv3d(16, 16, kernel_size=1, stride=1, padding=0)
         
-        # Encoder downsamples (exact match)
+        # Encoder downsamples (exact match - 96 channels for conv1)
         self.encoder = nn.ModuleDict({
-            'conv1': nn.Conv3d(3, 32, kernel_size=3, stride=2, padding=1),
+            'conv1': nn.Conv3d(3, 96, kernel_size=3, stride=2, padding=1),  # 96 channels, not 32
             'downsamples': nn.ModuleList([
-                nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv3d(96, 64, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1),
                 nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),
@@ -462,11 +462,11 @@ class WanVAE(nn.Module):
                         nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
                     ])
                 }),
-                # Attention block 1
+                # Attention block 1 (2D convolutions)
                 nn.ModuleDict({
                     'norm': nn.GroupNorm(32, 384),
-                    'proj': nn.Conv3d(384, 384, kernel_size=1, stride=1, padding=0),
-                    'to_qkv': nn.Conv3d(384, 1152, kernel_size=1, stride=1, padding=0),
+                    'proj': nn.Conv2d(384, 384, kernel_size=1, stride=1, padding=0),
+                    'to_qkv': nn.Conv2d(384, 1152, kernel_size=1, stride=1, padding=0),
                 }),
                 # Residual block 2
                 nn.ModuleDict({
@@ -568,10 +568,15 @@ class WanVAE(nn.Module):
                 h = residual[3](h)  # GroupNorm
                 h = residual[4](h)  # SiLU
                 h = residual[5](h)  # Conv3d
-            elif i == 1:  # Attention block
+            elif i == 1:  # Attention block (2D convolutions)
                 h = layer['norm'](h)  # GroupNorm
-                h = layer['proj'](h)  # Conv1x1
-                h = layer['to_qkv'](h)  # QKV projection
+                # Reshape for 2D convolution: [B, C, T, H, W] -> [B*T, C, H, W]
+                B, C, T, H, W = h.shape
+                h_2d = h.permute(0, 2, 1, 3, 4).contiguous().view(B*T, C, H, W)
+                h_2d = layer['proj'](h_2d)  # Conv2d
+                h_2d = layer['to_qkv'](h_2d)  # Conv2d
+                # Reshape back: [B*T, C, H, W] -> [B, C, T, H, W]
+                h = h_2d.view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
             elif i == 2:  # Residual block 2
                 residual = layer['residual']
                 h = residual[0](h)  # GroupNorm
