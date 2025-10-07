@@ -784,18 +784,27 @@ class EulerSampler:
     @staticmethod
     def step(model, x, t, t_next, cond, uncond, cfg_scale):
         """Single Euler step - denoises the input"""
+        print(f"      DEBUG: Input x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
+        print(f"      DEBUG: Timestep t: {t}, t_next: {t_next}, CFG: {cfg_scale}")
+        
         # Model predicts the denoised output (v-prediction or x0-prediction)
         with torch.no_grad():
             pred_cond = model(x, t, cond)
             pred_uncond = model(x, t, uncond)
         
+        print(f"      DEBUG: pred_cond range: [{pred_cond.min():.4f}, {pred_cond.max():.4f}]")
+        print(f"      DEBUG: pred_uncond range: [{pred_uncond.min():.4f}, {pred_uncond.max():.4f}]")
+        
         # Classifier-free guidance
         pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+        print(f"      DEBUG: CFG pred range: [{pred.min():.4f}, {pred.max():.4f}]")
         
         # Euler method: move from current noisy x towards predicted clean image
         # Standard DDIM/Euler formula for denoising
         sigma = t / 1000.0  # Convert timestep to sigma
         sigma_next = t_next / 1000.0
+        
+        print(f"      DEBUG: Sigma: {sigma:.4f}, Sigma_next: {sigma_next:.4f}")
         
         # Denoising step
         if sigma_next > 0:
@@ -804,6 +813,8 @@ class EulerSampler:
         else:
             # Final step
             x = pred
+        
+        print(f"      DEBUG: Final x range: [{x.min():.4f}, {x.max():.4f}]")
         
         return x
 
