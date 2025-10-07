@@ -303,20 +303,28 @@ class WanDiT(nn.Module):
         context: [B, N, D] text conditioning from T5
         """
         B, C, T, H, W = x.shape
+        print(f"        WanDiT DEBUG: Input x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
+        print(f"        WanDiT DEBUG: Timesteps: {timesteps}")
+        print(f"        WanDiT DEBUG: Context shape: {context.shape}")
         
         # Ensure input has same dtype as model
         model_dtype = next(self.parameters()).dtype
         x = x.to(dtype=model_dtype)
         timesteps = timesteps.to(dtype=model_dtype)
+        print(f"        WanDiT DEBUG: After dtype conversion - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Patchify
         x = self.patch_embed(x)  # [B, hidden_size, T', H', W']
+        print(f"        WanDiT DEBUG: After patch_embed - x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
         x = rearrange(x, 'b c t h w -> b (t h w) c')
+        print(f"        WanDiT DEBUG: After rearrange - x shape: {x.shape}, range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Add positional embedding - computed dynamically
         seq_len = x.shape[1]
         pos_embed = self._get_pos_embed(seq_len, x.device, dtype=x.dtype)
+        print(f"        WanDiT DEBUG: pos_embed shape: {pos_embed.shape}, range: [{pos_embed.min():.4f}, {pos_embed.max():.4f}]")
         x = x + pos_embed
+        print(f"        WanDiT DEBUG: After pos_embed - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Time conditioning (not used in WAN 2.2, but keep for compatibility)
         t_emb = self.time_embed(timesteps)
