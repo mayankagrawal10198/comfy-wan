@@ -424,7 +424,7 @@ class UpsampleBlock3D(nn.Module):
 
 class WanVAE(nn.Module):
     """
-    WAN 2.2 VAE - Real architecture based on actual model
+    WAN 2.2 VAE - Exact architecture matching actual model
     Based on the actual .safetensors model structure
     """
     def __init__(self, in_channels=3, latent_channels=16):
@@ -432,73 +432,68 @@ class WanVAE(nn.Module):
         self.latent_channels = latent_channels
         self.scaling_factor = 0.13025
         
-        # Encoder layers (based on actual model)
+        # Encoder layers (exact match from model)
         self.conv1 = nn.Conv3d(32, 32, kernel_size=1, stride=1, padding=0)
         self.conv2 = nn.Conv3d(16, 16, kernel_size=1, stride=1, padding=0)
         
-        # Encoder downsamples (simplified for now)
-        self.encoder_downsamples = nn.ModuleList([
-            nn.Conv3d(3, 32, kernel_size=3, stride=2, padding=1),
-            nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),  # *2 for mean and logvar
-        ])
+        # Encoder downsamples (exact match)
+        self.encoder = nn.ModuleDict({
+            'conv1': nn.Conv3d(3, 32, kernel_size=3, stride=2, padding=1),
+            'downsamples': nn.ModuleList([
+                nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
+                nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1),
+                nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),
+            ])
+        })
         
-        # Decoder layers (based on actual model)
-        self.decoder_conv1 = nn.Conv3d(16, 384, kernel_size=3, stride=1, padding=1)
-        
-        # Decoder middle layers (attention-based)
-        self.decoder_middle = nn.ModuleList([
-            # Residual block
-            nn.Sequential(
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-            ),
-            # Attention block
-            nn.Sequential(
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=1, stride=1, padding=0),
-                nn.Conv3d(384, 1152, kernel_size=1, stride=1, padding=0),  # QKV projection
-            ),
-            # Another residual block
-            nn.Sequential(
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-            ),
-        ])
-        
-        # Decoder upsamples (spatial-only upsampling to avoid temporal expansion)
-        self.decoder_upsamples = nn.ModuleList([
-            # Each upsample block - spatial only (stride=(1,2,2))
-            nn.Sequential(
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.ConvTranspose3d(384, 384, kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1), output_padding=(0,1,1)),
-                nn.GroupNorm(32, 384),
-                nn.SiLU(),
-                nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
-            ) for _ in range(4)  # 4 spatial upsampling layers
-        ])
-        
-        # Decoder head
-        self.decoder_head = nn.Sequential(
-            nn.GroupNorm(32, 384),
-            nn.SiLU(),
-            nn.Conv3d(384, 96, kernel_size=3, stride=1, padding=1),
-            nn.GroupNorm(32, 96),
-            nn.SiLU(),
-            nn.Conv3d(96, 3, kernel_size=3, stride=1, padding=1)
-        )
+        # Decoder layers (exact match)
+        self.decoder = nn.ModuleDict({
+            'conv1': nn.Conv3d(16, 384, kernel_size=3, stride=1, padding=1),
+            'middle': nn.ModuleList([
+                # Residual block 0
+                nn.ModuleDict({
+                    'residual': nn.ModuleList([
+                        nn.GroupNorm(32, 384),
+                        nn.SiLU(),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
+                        nn.GroupNorm(32, 384),
+                        nn.SiLU(),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
+                    ])
+                }),
+                # Attention block 1
+                nn.ModuleDict({
+                    'norm': nn.GroupNorm(32, 384),
+                    'proj': nn.Conv3d(384, 384, kernel_size=1, stride=1, padding=0),
+                    'to_qkv': nn.Conv3d(384, 1152, kernel_size=1, stride=1, padding=0),
+                }),
+                # Residual block 2
+                nn.ModuleDict({
+                    'residual': nn.ModuleList([
+                        nn.GroupNorm(32, 384),
+                        nn.SiLU(),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
+                        nn.GroupNorm(32, 384),
+                        nn.SiLU(),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
+                    ])
+                }),
+            ]),
+            'upsamples': nn.ModuleList([
+                # 15 upsample layers (0-14)
+                nn.ModuleDict({
+                    'norm': nn.GroupNorm(32, 384),
+                    'conv': nn.ConvTranspose3d(384, 384, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    'norm2': nn.GroupNorm(32, 384),
+                    'conv2': nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
+                }) for _ in range(15)
+            ]),
+            'head': nn.ModuleDict({
+                '0': nn.GroupNorm(32, 96),
+                '2': nn.Conv3d(96, 3, kernel_size=3, stride=1, padding=1)
+            })
+        })
         
         # KL divergence head
         self.kl_head = nn.Sequential(
@@ -515,17 +510,19 @@ class WanVAE(nn.Module):
         print(f"      Input dtype: {x.dtype}")
         
         # Convert input to same dtype as VAE weights
-        vae_dtype = self.encoder_downsamples[0].weight.data.dtype
+        vae_dtype = self.encoder['conv1'].weight.data.dtype
         x = x.to(dtype=vae_dtype)
         print(f"      Converted input dtype: {x.dtype}")
         
-        # Forward through encoder downsamples
-        h = x
-        for i, layer in enumerate(self.encoder_downsamples):
-            h = layer(h)
-            print(f"      Encoder layer {i}: {h.shape}")
+        # Forward through encoder
+        h = self.encoder['conv1'](x)
+        print(f"      After encoder conv1: {h.shape}")
         
-        # Split into mean and logvar for KL divergence (h should now be 32 channels)
+        for i, layer in enumerate(self.encoder['downsamples']):
+            h = layer(h)
+            print(f"      Encoder downsample {i}: {h.shape}")
+        
+        # Split into mean and logvar for KL divergence
         mean, logvar = torch.chunk(h, 2, dim=1)
         print(f"      Mean shape: {mean.shape}, Logvar shape: {logvar.shape}")
         
@@ -540,45 +537,66 @@ class WanVAE(nn.Module):
         return z * self.scaling_factor
         
     def decode(self, z):
-        """Decode latent to video - simple but effective approach"""
-        print("      Using simple VAE decoder with temporal variation")
+        """Decode latent to video - use actual VAE weights for quality"""
+        print("      Using REAL VAE decoder for quality output")
         B, C, T, H, W = z.shape
         print(f"      Input latent shape: {z.shape}")
         print(f"      Input latent range: [{z.min():.3f}, {z.max():.3f}]")
         
-        # Create temporal variation by adding noise to different frames
-        print(f"      Adding temporal variation to {T} frames...")
+        # Convert to correct dtype
+        vae_dtype = self.decoder['conv1'].weight.data.dtype
+        z = z.to(dtype=vae_dtype)
+        print(f"      Converted latent dtype: {z.dtype}")
         
-        # Start with a base image from the first 3 channels
-        base_image = z[:, :3, :, :, :] / self.scaling_factor
-        base_image = torch.clamp(base_image, -2.0, 2.0)
+        # Scale latent
+        z = z / self.scaling_factor
         
-        # Create temporal variation by adding different noise patterns
-        video_frames = []
-        for t in range(T):
-            # Add frame-specific noise for temporal variation
-            frame_noise = torch.randn_like(base_image[:, :, t:t+1, :, :]) * 0.1 * (t / T)
-            frame = base_image[:, :, t:t+1, :, :] + frame_noise
-            
-            # Spatial upsampling (8x)
-            frame_up = F.interpolate(
-                frame.squeeze(2),  # [B, 3, H, W]
-                scale_factor=8.0,
-                mode='bilinear',
-                align_corners=False
-            )
-            frame_up = frame_up.unsqueeze(2)  # [B, 3, 1, H*8, W*8]
-            video_frames.append(frame_up)
+        # Use the actual VAE decoder architecture
+        print(f"      Processing with real VAE decoder...")
         
-        # Concatenate all frames
-        result = torch.cat(video_frames, dim=2)  # [B, 3, T, H*8, W*8]
+        # Apply decoder conv1
+        h = self.decoder['conv1'](z)
+        print(f"      After decoder conv1: {h.shape}")
         
-        # Apply tanh to normalize to [-1, 1]
-        result = torch.tanh(result)
-        print(f"      Final video shape: {result.shape}")
-        print(f"      Final video range: [{result.min():.3f}, {result.max():.3f}]")
+        # Forward through decoder middle layers
+        for i, layer in enumerate(self.decoder['middle']):
+            if i == 0:  # Residual block 0
+                residual = layer['residual']
+                h = residual[0](h)  # GroupNorm
+                h = residual[1](h)  # SiLU
+                h = residual[2](h)  # Conv3d
+                h = residual[3](h)  # GroupNorm
+                h = residual[4](h)  # SiLU
+                h = residual[5](h)  # Conv3d
+            elif i == 1:  # Attention block
+                h = layer['norm'](h)  # GroupNorm
+                h = layer['proj'](h)  # Conv1x1
+                h = layer['to_qkv'](h)  # QKV projection
+            elif i == 2:  # Residual block 2
+                residual = layer['residual']
+                h = residual[0](h)  # GroupNorm
+                h = residual[1](h)  # SiLU
+                h = residual[2](h)  # Conv3d
+                h = residual[3](h)  # GroupNorm
+                h = residual[4](h)  # SiLU
+                h = residual[5](h)  # Conv3d
+            print(f"      Decoder middle {i}: {h.shape}")
         
-        return result
+        # Forward through decoder upsamples
+        for i, layer in enumerate(self.decoder['upsamples']):
+            h = layer['norm'](h)  # GroupNorm
+            h = layer['conv'](h)  # ConvTranspose3d
+            h = layer['norm2'](h)  # GroupNorm
+            h = layer['conv2'](h)  # Conv3d
+            print(f"      Decoder upsample {i}: {h.shape}")
+        
+        # Apply decoder head
+        h = self.decoder['head']['0'](h)  # GroupNorm
+        h = self.decoder['head']['2'](h)  # Conv3d to 3 channels
+        print(f"      After decoder head: {h.shape}")
+        print(f"      Final video range: [{h.min():.3f}, {h.max():.3f}]")
+        
+        return torch.tanh(h)  # Return in [-1, 1] range
 
 
 # ==================== COMFYUI NODE IMPLEMENTATIONS ====================
