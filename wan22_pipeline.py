@@ -987,9 +987,9 @@ class LoraLoaderModelOnly:
         
         # Debug: show what we're trying to match
         sample_lora_key = list(lora_layers.keys())[0] if lora_layers else 'none'
-        sample_model_keys = [k for k in model_params.keys() if 'blocks.0' in k][:3]
+        sample_model_keys = [k for k in model_params.keys() if 'blocks.0.cross_attn' in k][:3]
         print(f"   Sample LoRA key: {sample_lora_key}")
-        print(f"   Sample model keys: {sample_model_keys}")
+        print(f"   Sample model keys (cross_attn): {sample_model_keys}")
         
         # Apply LoRA to matching model parameters
         for base_key, lora_weights in lora_layers.items():
@@ -1017,8 +1017,10 @@ class LoraLoaderModelOnly:
                         param.data = param.data + lora_update.to(param.dtype).to(param.device)
                         applied_count += 1
                     else:
+                        print(f"      Shape mismatch for {model_key_weight}: LoRA {diff.shape} vs Model {param.shape}")
                         skipped_count += 1
                 except Exception as e:
+                    print(f"      Error applying LoRA to {model_key_weight}: {e}")
                     skipped_count += 1
             else:
                 skipped_count += 1
