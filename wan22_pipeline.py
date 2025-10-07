@@ -1260,10 +1260,16 @@ class WAN22Pipeline:
         # tensor shape: [B, C, T, H, W]
         tensor = tensor.squeeze(0).cpu()  # Remove batch, move to CPU
         
+        # Convert to float32 (numpy doesn't support bfloat16)
+        if tensor.dtype == torch.bfloat16:
+            tensor = tensor.float()
+            print(f"      Converted from bfloat16 to float32")
+        
         # Debug: Check tensor stats
         print(f"      Tensor shape: {tensor.shape}")
         print(f"      Tensor range: [{tensor.min():.3f}, {tensor.max():.3f}]")
         print(f"      Tensor mean: {tensor.mean():.3f}")
+        print(f"      Tensor dtype: {tensor.dtype}")
         
         # Check for NaN or Inf
         if torch.isnan(tensor).any():
