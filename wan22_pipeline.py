@@ -512,6 +512,12 @@ class WanVAE(nn.Module):
         print("      Using real VAE encoder")
         B, C, T, H, W = x.shape
         print(f"      Input shape: {x.shape}")
+        print(f"      Input dtype: {x.dtype}")
+        
+        # Convert input to same dtype as VAE weights
+        vae_dtype = next(self.encoder_downsamples[0].weight.data.dtype)
+        x = x.to(dtype=vae_dtype)
+        print(f"      Converted input dtype: {x.dtype}")
         
         # Forward through encoder downsamples
         h = x
@@ -542,6 +548,12 @@ class WanVAE(nn.Module):
         B, C, T, H, W = z.shape
         print(f"      Input latent shape: {z.shape}")
         print(f"      Input latent range: [{z.min():.3f}, {z.max():.3f}]")
+        print(f"      Input dtype: {z.dtype}")
+        
+        # Convert input to same dtype as VAE weights
+        vae_dtype = next(self.decoder_conv1.weight.data.dtype)
+        z = z.to(dtype=vae_dtype)
+        print(f"      Converted latent dtype: {z.dtype}")
         
         # Scale latent
         z = z / self.scaling_factor
