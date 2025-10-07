@@ -977,6 +977,16 @@ class WAN22Pipeline:
         print("Initializing WAN 2.2 Pipeline")
         print("="*60)
         
+        # Clear GPU memory before loading
+        if device == "cuda" and torch.cuda.is_available():
+            print("\nClearing GPU memory...")
+            import gc
+            torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            print(f"✓ GPU memory cleared (currently using {allocated:.2f} GB)\n")
+        
         self._load_all_models()
         
     def _load_all_models(self):
