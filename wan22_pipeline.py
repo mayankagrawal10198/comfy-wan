@@ -991,9 +991,14 @@ class LoraLoaderModelOnly:
         print(f"   Sample LoRA key: {sample_lora_key}")
         print(f"   Sample model keys (cross_attn): {sample_model_keys}")
         
+        # Debug: check what's in lora_layers
+        first_key = list(lora_layers.keys())[0]
+        print(f"   First LoRA layer contents: {lora_layers[first_key].keys()}")
+        
         # Apply LoRA to matching model parameters
         for base_key, lora_weights in lora_layers.items():
             if 'alpha' not in lora_weights or 'diff' not in lora_weights:
+                print(f"      Skipping {base_key}: missing alpha or diff")
                 continue
                 
             alpha = lora_weights['alpha']
