@@ -253,9 +253,10 @@ class WanDiT(nn.Module):
         # Final layer (head) - matching real model structure
         # Real model has: head.head.weight, head.head.bias, head.modulation
         self.head = nn.ModuleDict({
-            'head': nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels),
-            'modulation': nn.Parameter(torch.zeros(1, 6, hidden_size))
+            'head': nn.Linear(hidden_size, patch_size[0] * patch_size[1] * patch_size[2] * in_channels)
         })
+        # Modulation as separate parameter (can't be in ModuleDict)
+        self.head_modulation = nn.Parameter(torch.zeros(1, 6, hidden_size))
         
         self.initialize_weights()
         
