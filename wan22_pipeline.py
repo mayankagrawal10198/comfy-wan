@@ -441,18 +441,18 @@ class WanVAE(nn.Module):
                 nn.Conv3d(256, latent_channels * 2, kernel_size=3, stride=1, padding=1),
             ]),
             'head': nn.ModuleDict({
-                '0': nn.GroupNorm(32, 96),
-                '2': nn.Conv3d(96, 3, kernel_size=3, stride=1, padding=1)
+                '0': nn.GroupNorm(32, 384),  # 384 channels, not 96
+                '2': nn.Conv3d(384, 32, kernel_size=3, stride=1, padding=1)  # 384->32, not 96->3
             }),
             'middle': nn.ModuleList([
                 nn.ModuleDict({
                     'residual': nn.ModuleList([
-                        nn.GroupNorm(32, 96),
+                        nn.GroupNorm(32, 384),  # 384 channels, not 96
                         nn.SiLU(),
-                        nn.Conv3d(96, 96, kernel_size=3, stride=1, padding=1),
-                        nn.GroupNorm(32, 96),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),  # 384->384, not 96->96
+                        nn.GroupNorm(32, 384),
                         nn.SiLU(),
-                        nn.Conv3d(96, 96, kernel_size=3, stride=1, padding=1),
+                        nn.Conv3d(384, 384, kernel_size=3, stride=1, padding=1),
                     ])
                 })
             ])
