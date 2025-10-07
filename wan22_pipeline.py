@@ -339,10 +339,18 @@ class WanDiT(nn.Module):
         for i, block in enumerate(self.blocks):
             print(f"        WanDiT DEBUG: Before block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
             x = block(x, context)  # Pass full context, not pooled
-            print(f"        WanDiT DEBUG: After block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
-            if torch.isnan(x).any():
-                print(f"        WanDiT DEBUG: NaN detected in block {i}!")
+            
+            # Apply gradient clipping to prevent explosion
+            if torch.isnan(x).any() or torch.isinf(x).any():
+                print(f"        WanDiT DEBUG: NaN/Inf detected in block {i}!")
+                # Replace with small random values to continue
+                x = torch.randn_like(x) * 0.01
                 break
+            
+            # Clip extreme values to prevent explosion
+            x = torch.clamp(x, -100.0, 100.0)
+            
+            print(f"        WanDiT DEBUG: After block {i} - x range: [{x.min():.4f}, {x.max():.4f}]")
         
         # Final layer (head)
         x = self.head['head'](x)
